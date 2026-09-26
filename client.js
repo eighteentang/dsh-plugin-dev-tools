@@ -247,7 +247,34 @@ window.__ModuleLoader__.load({
   transition:background .15s,color .15s}
 .dvt-refresh:hover{background:rgba(127,127,127,.16);color:var(--dsw-alias-label-primary,#e6e8ee)}
 .dvt-refresh[disabled]{opacity:.5;cursor:not-allowed}
-.dvt-controls{display:flex;align-items:center;gap:6px;padding:0 2px 4px;flex-wrap:nowrap}
+/* 账号菜单那一行（settings.trigger）里的重启/关闭。
+   只放图标 —— 那一行原本是「头像 + 用户名」，实测行宽 260×44，
+   带文字的按钮会把行挤爆。说明走 title（悬停提示）。
+
+   ⚠ 这一版是"看得见优先"（第一版渲染后用户报告"没看见按钮"）：
+     · 不用 flex:1 1 auto —— 那个容器的方向不确定，会被拉伸成 0 高或压扁
+     · 所有尺寸写死（width/height/flex:0 0 auto），不依赖父容器
+     · 颜色不用主题变量 —— 变量不存在（或为空串）时可能算出透明色，
+       所以直接用固定色，牺牲一点主题跟随换可见性
+
+   ⚠ 本段在**模板字符串**里（BASE_CSS 用反引号包裹）——
+     注释里**不能出现反引号**，否则会提前闭合字符串，整个 bundle 语法错误、
+     装上去应用起不来。（这个坑我连踩两次：第一次是举例写了反引号，
+     第二次是"记录这个坑"的注释里又写了反引号。**别在这里用反引号。**） */
+.dvt-account-row{display:flex;flex-direction:row;align-items:center;gap:6px;
+  width:100%;min-width:0}
+.dvt-account-open{display:inline-flex;align-items:center;gap:6px;flex:1 1 auto;
+  min-width:0;padding:0;margin:0;border:none;background:transparent;
+  color:inherit;font:inherit;text-align:left;cursor:pointer}
+.dvt-icon-btn{display:inline-flex;align-items:center;justify-content:center;
+  width:28px;height:28px;min-width:28px;flex:0 0 auto;padding:0;margin:0;
+  border-radius:50%;cursor:pointer;
+  border:1px solid rgba(139,147,167,.35);background:rgba(139,147,167,.12);
+  color:#c8cede;
+  font-family:inherit;font-size:14px;line-height:1;
+  transition:background .15s,color .15s}
+.dvt-icon-btn:hover{background:rgba(139,147,167,.28);color:#ffffff}
+.dvt-icon-btn[disabled]{opacity:.4;cursor:not-allowed}
 .dvt-pill{display:inline-flex;align-items:center;justify-content:center;gap:5px;
   height:26px;padding:0 9px;border-radius:13px;cursor:pointer;
   border:1px solid var(--dsw-alias-border-primary,#2b3040);
@@ -439,56 +466,219 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 应用控制按钮的 UI（重启 / 关闭）。
+     * 侧边栏底部「账号那一行」的重启/关闭。
      *
-     * ⚠ 这两个按钮原本在 QQ 插件里（`qq-bridge-app-controls`，order 10）。
-     *   现在移到开发工具箱 —— 它们是**开发期用具**（改完代码要重启验证），
-     *   不该出现在用户拿到的产品里。
+     * ⚠ 两个槽位的关系（我一开始搞错了，导致"按钮不见了"）：
      *
-     * 控制接口在宿主半的 app-control.js（端口 8800，与 QQ 插件的 8799 错开）。
+     *   用户看到的那一行（`button._8mDnW_trigger`，aria-label「账号菜单」，
+     *   文字「Eighteen🤿」）是 **`settings.launcher`** ——
+     *   由 `dsh-client-ui-settings-account` 的 `AccountMenu` 渲染。
+     *
+     *   而 `settings.trigger` 只是它**内部**的一小块（那个 ⚙ 图标）。
+     *   我第一次改的是 trigger，所以遮蔽生效了、但用户看到的是 launcher，
+     *   表现就是"按钮没出现、用户名还在"。
+     *
+     * ⚠ 代价（必须知道）：`settings.launcher` 的 ownerProps 里带着
+     *
+     *     openSettings: () => void
+     *
+     *   也就是**"打开设置"的能力是这个槽位自己负责的**。
+     *   顶掉它就必须把这件事一起实现，否则用户进不去设置。
+     *   所以下面渲染的是：**用户名（点击开设置）+ ⟳ + ⏻**，
+     *   而不是只有两个按钮。
      */
-    function AppControlButtons() {
+    /**
+     * 侧边栏底部动作区（`sidebar.footer.action`）里的重启/关闭。
+     *
+     * 这是**加法**（list 槽位，与「插件」按钮和设置并列），
+     * 不会顶掉任何现有功能 —— 与 `SidebarAccountRow` 那条路的关键区别。
+     *
+     * ⚠ 样式写内联：注入 `<style>` 到 document.head 这条路
+     *   **无法从外部验证**（可能被样式隔离），内联至少保证"看得见"。
+     */
+    function FooterAppControls() {
       ensureStyle();
       const [busy, setBusy] = React.useState(null);
 
-      const run = async (action, confirmText, pendingText) => {
-        if (!globalThis.confirm(confirmText)) return;
-        setBusy(action);
-        try {
-          const response = await fetch(`http://127.0.0.1:8800/dev-tools/${action}`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const result = await response.json();
-          if (result?.ok !== true) throw new Error(result?.error ?? '返回异常');
-          // 界面随后会被进程退出带下去，不需要复位 busy
-          if (pendingText !== null) globalThis.alert(pendingText);
-        } catch (error) {
-          setBusy(null);
-          globalThis.alert(`操作失败：${error?.message ?? error}\n\n宿主控制接口（8800）可能没启动。`);
-        }
+      const BTN = {
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: '28px', height: '28px', minWidth: '28px', flex: '0 0 auto',
+        padding: '0', margin: '0', borderRadius: '8px',
+        border: '1px solid rgba(139,147,167,.30)',
+        background: 'rgba(139,147,167,.12)',
+        color: '#c8cede', fontFamily: 'inherit', fontSize: '14px',
+        lineHeight: '1', cursor: 'pointer',
       };
 
-      return h('div', { className: 'dvt-controls' },
-        h('button', {
-          className: 'dvt-pill',
-          title: '重启 DeepSeek Harness（会自动开回新窗口）',
-          disabled: busy !== null,
-          onClick: () => run('restart',
-            '确定重启 DeepSeek Harness 吗？\n\n新窗口会自动打开，旧窗口会关闭。',
-            '正在重启…'),
+      const run = (action, confirmText, pendingText) => {
+        if (!globalThis.confirm(confirmText)) return;
+        setBusy(action);
+        fetch(`http://127.0.0.1:8800/dev-tools/${action}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+        })
+          .then((res) => res.json())
+          .then((result) => {
+            if (result?.ok !== true) throw new Error(result?.error ?? '返回异常');
+            // 界面随后会被进程退出带下去，不需要复位 busy
+            if (pendingText !== null) globalThis.alert(pendingText);
+          })
+          .catch((error) => {
+            setBusy(null);
+            globalThis.alert(`操作失败：${error?.message ?? error}\n\n宿主控制接口（8800）可能没启动。`);
+          });
+      };
+
+      return h('div', {
+        className: 'dvt-footer-controls',
+        style: {
+          display: 'inline-flex', flexDirection: 'row', alignItems: 'center',
+          gap: '4px', flex: '0 0 auto',
         },
-        h('span', { className: 'dvt-pill-icon' }, busy === 'restart' ? '…' : '⟳'),
-        h('span', { className: 'dvt-pill-text' }, '重启')),
+      },
         h('button', {
-          className: 'dvt-pill',
+          type: 'button',
+          className: 'dvt-icon-btn',
+          // 骷髅头 = "弄死它"（用户选的图标）
+          style: { ...BTN, fontSize: '15px' },
+          title: '结束 DSH 宿主进程 —— 随后 DSH 会弹出恢复框，在那里选「重启」或「退出」',
+          'aria-label': '结束进程',
+          disabled: busy !== null,
+          onClick: () => run('quit',
+            '结束 DSH 宿主进程？\n\n'
+            + '接下来会发生什么：\n'
+            + '  1. DSH 会弹出**恢复框**（这不是报错，是正常流程 —— '
+            + '外壳把"宿主终止"一律当异常处理）\n'
+            + '  2. 在那个框里选：\n'
+            + '       · 「重启」→ 干净的自动重启（约 7 秒）\n'
+            + '       · 「退出」→ 关闭应用\n'
+            + '  3. 不要手动去点桌面图标 —— 那会撞上单实例锁\n\n'
+            + '为什么不做成一个直接重启的按钮：DSH 没有对外的重启接口，'
+            + '自己杀进程再拉起要慢 9 倍（约 64 秒），不如用官方的恢复框。',
+            '正在结束进程…\n\nDSH 会弹出恢复框，在那里选「重启」或「退出」。'),
+        }, busy === 'quit' ? '…' : '💀'));
+    }
+
+    /**
+     * ⚠ 以下组件**当前未使用**（保留作参考）。
+     *
+     * 它曾经用来替换侧边栏底部「账号那一行」（`settings.launcher`），
+     * 但**代价不可接受** —— 那个槽位的占据者是 `AccountMenu`，
+     * 它拥有"账号上拉菜单"，不只是"头像 + 用户名"。
+     * 顶掉之后用户名和上拉菜单全没了，只剩我实现的"打开设置"。
+     *
+     * 结论：`single` 槽位**可以**用 priority 遮蔽（机制是真的），
+     * 但遮蔽"功能件"（ownerProps 里有 `openSettings` 这类能力字段的）
+     * = 自己重写那个功能，必须先把它做全。
+     */
+    function SidebarAccountRow(props) {
+      ensureStyle();
+      const [busy, setBusy] = React.useState(null);
+
+      // ⚠ 关键样式同时写内联。
+      //
+      //   第一版完全靠注入的 CSS 类，结果用户报告"没看见按钮" ——
+      //   而注入 `<style>` 到 document.head 这条路**我无法从外部验证**
+      //   （可能被槽位渲染的样式隔离，也可能选择器被覆盖）。
+      //   内联样式不依赖那个，至少保证"看得见"。
+      const BTN = {
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: '26px', height: '26px', minWidth: '26px', flex: '0 0 auto',
+        padding: '0', margin: '0', borderRadius: '50%',
+        border: '1px solid rgba(139,147,167,.35)',
+        background: 'rgba(139,147,167,.14)',
+        color: '#c8cede', fontFamily: 'inherit', fontSize: '14px',
+        lineHeight: '1', cursor: 'pointer',
+      };
+
+      const run = (action, confirmText, pendingText) => {
+        if (!globalThis.confirm(confirmText)) return;
+        setBusy(action);
+        fetch(`http://127.0.0.1:8800/dev-tools/${action}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+        })
+          .then((res) => res.json())
+          .then((result) => {
+            if (result?.ok !== true) throw new Error(result?.error ?? '返回异常');
+            // 界面随后会被进程退出带下去，不需要复位 busy
+            if (pendingText !== null) globalThis.alert(pendingText);
+          })
+          .catch((error) => {
+            setBusy(null);
+            globalThis.alert(`操作失败：${error?.message ?? error}\n\n宿主控制接口（8800）可能没启动。`);
+          });
+      };
+      // 账号相关信息由 ownerProps 提供；缺失时降级成"没有文字"，不报错。
+      const wide = props?.wide !== false;
+      const openSettings = typeof props?.openSettings === 'function' ? props.openSettings : null;
+
+      return h('div', {
+        className: 'dvt-account-row',
+        style: {
+          display: 'flex', flexDirection: 'row', alignItems: 'center',
+          gap: '6px', width: '100%', minWidth: '0',
+        },
+      },
+        // ── 保留「打开设置」的能力（这个槽位原本负责它，不能被顶掉）──
+        openSettings === null ? null : h('button', {
+          type: 'button',
+          className: 'dvt-account-open',
+          title: '打开设置',
+          'aria-label': '打开设置',
+          style: {
+            display: 'inline-flex', alignItems: 'center', gap: '6px',
+            flex: '1 1 auto', minWidth: '0',
+            padding: '0', margin: '0', border: 'none', background: 'transparent',
+            color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer',
+          },
+          onClick: (event) => { event.stopPropagation(); openSettings(); },
+        },
+        h('span', { 'aria-hidden': 'true', style: { flex: '0 0 auto' } }, '⚙'),
+        // 用户名：宽栏时显示，窄栏（rail）时隐藏 —— 与官方 wide 语义一致
+        wide ? h('span', {
+          style: {
+            flex: '1 1 auto', minWidth: '0', overflow: 'hidden',
+            textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            opacity: '.8',
+          },
+        }, '设置') : null),
+
+        h('button', {
+          type: 'button',
+          className: 'dvt-icon-btn',
+          style: BTN,
+          title: '重启 DeepSeek Harness（新窗口会自动打开）',
+          'aria-label': '重启',
+          disabled: busy !== null,
+          onClick: (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            run('restart',
+              '重启 DeepSeek Harness？\n\n'
+              + '接下来会发生什么：\n'
+              + '  1. 这个窗口会关闭\n'
+              + '  2. 大约 5~10 秒后自动重新打开（右下角没有提示，就是在启动中）\n'
+              + '  3. 请**不要**手动去点桌面图标 —— 那会撞上单实例锁，看起来像没反应\n\n'
+              + '如果 15 秒后还没回来，再手动打开即可。',
+              '正在重启…\n\n窗口马上关闭，请等它自己回来（约 5~10 秒）。');
+          },
+        }, busy === 'restart' ? '…' : '⟳'),
+        h('button', {
+          type: 'button',
+          className: 'dvt-icon-btn',
+          style: BTN,
           title: '关闭 DeepSeek Harness',
+          'aria-label': '关闭',
           disabled: busy !== null,
-          onClick: () => run('quit', '确定关闭 DeepSeek Harness 吗？', '正在关闭…'),
-        },
-        h('span', { className: 'dvt-pill-icon' }, busy === 'quit' ? '…' : '⏻'),
-        h('span', { className: 'dvt-pill-text' }, '关闭')));
+          onClick: (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            run('quit',
+              '关闭 DeepSeek Harness？\n\n窗口会关闭，不会自动重开。',
+              '正在关闭…');
+          },
+        }, busy === 'quit' ? '…' : '⏻'));
     }
 
     /**
@@ -501,23 +691,41 @@ window.__ModuleLoader__.load({
     const TOOLS = [
       {
         id: 'app-control',
-        name: '应用控制按钮',
-        summary: '在侧边栏底部显示 ⟳ 重启 和 ⏻ 关闭 两个按钮。改完插件代码要重启验证时很方便。',
-        usage: '开启后侧边栏底部（用户名上方）出现两个按钮：⟳ 重启（新窗口自动打开）、⏻ 关闭。'
-             + '重启会弹一次系统提示框，在框里点「重启」即可。'
-             + '关闭此工具会**把按钮从界面上摘掉**，不是隐藏。',
+        name: '结束进程按钮（💀）',
+        summary: '在侧边栏底部加一个 💀 按钮：结束 DSH 宿主进程，然后由 DSH 自己的恢复框选择重启或退出。',
+        usage: '点 💀 → 确认 → DSH 弹出恢复框 → 在那里选「重启」（干净重启，约 7 秒）或「退出」。'
+             + '那个框不是报错，是正常流程：DSH 外壳把"宿主进程终止"一律当异常处理，'
+             + '所以任何结束宿主的操作都会经过它。'
+             + '关掉此工具会把按钮从界面摘掉（不是隐藏）。',
         defaultEnabled: true,
 
         enable(host) {
           const { ctx } = host;
-          // slots.inject 返回一个幂等注销器 —— 正好就是"真注销"需要的清理函数：
-          // 停用这个工具 = 调用它 = 把 sidebar.footer.action 上的注册摘掉。
+          // ══════════════════════════════════════════════════════════════
+          // ⚠ 已回滚到 `sidebar.footer.action`（2026-09-26）
+          //
+          // 试过把按钮放进侧边栏底部「账号那一行」（`settings.launcher`），
+          // 用 `priority: -1` 遮蔽它 —— **遮蔽确实生效了，但代价不可接受**：
+          //
+          //   那个槽位是 `dsh-client-ui-settings-account` 的 `AccountMenu`，
+          //   它不只是"头像 + 用户名"，还**拥有账号上拉菜单**。
+          //   顶掉它之后：用户名没了、上拉菜单没了，只剩我实现的"打开设置"。
+          //   → 功能被削掉了，这比"按钮位置不好"严重得多。
+          //
+          // **教训**：`single` 槽位可以用 priority 遮蔽（机制是真的），
+          // 但**先要搞清那个槽位的占据者到底负责什么**。
+          // 看到 `ownerProps` 里有 `openSettings` 这种"能力型"字段，
+          // 就说明它不是一个装饰位，而是一个**功能件** —— 遮蔽它 = 自己重写那个功能。
+          //
+          // `SidebarAccountRow` 组件先留着（未使用），以后如果真要做账号菜单替换
+          // 可以拿它当起点，但必须先把 AccountMenu 的行为补全（上拉菜单里的每一项）。
+          // ══════════════════════════════════════════════════════════════
           return ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
             name: 'sidebar.footer.action',
             id: 'dev-tools-app-controls',
             order: 10,
             label: () => '应用控制',
-          }, AppControlButtons));
+          }, FooterAppControls));
         },
       },
 

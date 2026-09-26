@@ -16,19 +16,35 @@
  * 它请求 http://127.0.0.1 在浏览器看来**本来就是跨站**（`sec-fetch-site: cross-site`
  * 是常态）。这两点都在 QQ 插件那边实测踩过，见 docs/打通全记录.md 经验 9。
  *
- * ── 重启为什么要"从外部结束外壳" ─────────────────────────────
+ * ── 两种"结束"路径（2026-09-26 更新）─────────────────────────
  *
- * 外壳的判定逻辑（lib/main.js:3722 / 3809）：
+ * ① **走 /dev-tools/quit —— 现在界面用的就是这条**
+ *    宿主 `process.exit(0)` → 外壳判定异常 → 弹**故障恢复框** →
+ *    用户在那里选「重启」（走官方 `app.relaunch()`，实测约 7 秒）或「退出」。
+ *    干净、快、走官方路径。
  *
- *   child.once("close", (code) => { … this.fail(new Error(`dsh desktop host stopped…`)); });
+ * ② **走 /dev-tools/restart —— 已弃用，保留作参考**
+ *    从外部杀外壳再由助手拉起。代价：约 64 秒 + 必然弹框。
+ *    详见下面 restart 分支上方的说明。
+ *
+ * ── 为什么自造重启绕不过去（历史记录，仍有参考价值）──────────
+ *
+ * 外壳的判定逻辑（lib/main.js）：
+ *
+ *   child.once("close", (code) => {
+ *     if (code !== 0 && code !== null) this.fail(new Error(`… exited with ${code}`));
+ *     else this.fail(new Error(`dsh desktop host stopped`));
+ *   });
  *   fail(error) { … if (!this.failureReported && !this.stopping) this.onFailure?.(error); }
  *   async stop() { this.stopping = true; if (child.connected) child.send({type:'shutdown'}, …); }
  *
- * 也就是说：**宿主进程一旦被终止，外壳必然弹错误框**（此时 stopping 仍为 false），
- * 而 stopping 只有外壳自己发起关闭时才会置位，插件无法触发。
+ * 也就是说：**宿主进程一旦终止，外壳必然弹框**（`stopping` 仍为 false，
+ * 而且两个分支都走 fail），而 `stopping` 只有外壳**自己**发起关闭时才会置位，
+ * 插件无法触发。
  *
- * 所以唯一可用的路径是：**从外部结束外壳**（外壳先死，它的处理器没机会弹框），
- * 再由独立助手拉起新实例。实测细节：
+ * 所以"让宿主干净退出"也躲不掉弹框 —— 那就干脆接受它、把选择交给用户（路径 ①）。
+ *
+ * 路径 ② 的实测细节（保留备查）：
  *   · `taskkill /PID <外壳> /F` —— **不要加 /T**
  *     加了 /T 会"先杀父再逐个杀子"，渲染进程要晚约 9 秒才死，那时外壳还活着，
  *     会捕获到 `render-process-gone(reason="killed")` 并弹框（lib/main.js:11432）。
@@ -55,9 +71,16 @@ export const CONTROL_PORT = Number(process.env.DEV_TOOLS_PORT ?? 8800);
 /**
  * 日志文件位置。
  *
- * ⚠ 不硬编码 `C:\Users\<某个用户>\` —— 那样换台机器就写不进去，
+ * ⚠ 不硬编码 C:\Users\(某个用户)\ 这种路径 —— 那样换台机器就写不进去，
  * 而写入失败被 try 包住，等于**静默没有日志**。
- * 用 `homedir()` 按当前用户推导。
+ * 用 homedir() 按当前用户推导。
+ *
+ * ⚠⚠ 本注释里**不要出现"反斜杠紧跟反引号"** ——
+ *    模板字符串里反斜杠会转义后面的反引号，让它失去闭合作用，
+ *    于是字符串一路吞到文件末尾，整份文件语法错误、插件加载不了。
+ *    排查方法：node --check 报的行号往往**不是**真凶
+ *    （它报的是模板字符串开始的地方），要自己数反引号配对。
+ *    本文件顶部的反引号校验脚本（verify-css-backticks.mjs）覆盖这类检查。
  */
 const LOG_FILE = join(homedir(), '.dsh', 'dev-tools.log');
 
@@ -271,9 +294,31 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode }) {
       return;
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // ⚠ /dev-tools/restart —— **已不再被界面使用**（2026-09-26），保留作参考。
+    //
+    // 为什么弃用（查证结论见经验库 E21）：
+    //   DSH **没有对外的重启接口**。真正的重启原语是 lib/main.js 里的
+    //     restart: () => { app.relaunch(); quitWithoutConfirmation(); }
+    //   它写在崩溃恢复对象里，**只被 fail() 调用，没有任何 IPC 暴露**
+    //   （42 个 preload 通道里没有 restart/quit/shutdown；
+    //     window.dshDesktop 只有 browser/keyboard/shortcuts/updates）。
+    //
+    //   所以下面这套"从外部杀外壳再拉起"是唯一能做到重启的办法，但代价大：
+    //     · 实测约 **64 秒**才恢复可用（DSH 自己的恢复框只要约 7 秒）
+    //     · 必然弹一次崩溃恢复框（外壳把"宿主终止"一律当异常）
+    //
+    //   现在的界面只有一个 💀 按钮，走的是 **quit 接口** ——
+    //   让宿主干净退出、由 DSH 自己弹恢复框，用户在那里选「重启」或「退出」。
+    //   这比自造重启更快、更干净，而且用的是官方路径。
+    //
+    // **留着的原因**：万一以后 DSH 暴露了重启通道，这套代码可以改成调它 ——
+    //   那时 findShellPid() + 助手脚本就可以删掉了。
+    // ══════════════════════════════════════════════════════════════════════
     if (action === 'restart') {
       const shellPid = findShellPid();
       json({ ok: true, action: 'restart', shellPid });
+      logLine('收到 restart 请求（已弃用路径，界面不再使用）');
 
       setTimeout(() => {
         try {
@@ -290,10 +335,20 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode }) {
             // 只杀外壳，不要 /T —— 理由见文件头
             "    try { execFileSync('taskkill', ['/PID', String(shellPid), '/F'], { stdio: 'ignore' }); log('taskkill ok'); }",
             "    catch (e) { log('taskkill failed: ' + e.message); }",
-            '    for (let i = 0; i < 60; i++) { if (!alive(shellPid)) break; await wait(250); }',
-            "    log('shell alive=' + alive(shellPid));",
+            // ⚠ 别再"先轮询 250ms 一次、再硬等 1200ms" —— 实测过：
+            //   taskkill 同步返回时旧进程**已经死了**（第 1 次 alive() 就为 false），
+            //   那两段等待合计约 1.2 秒是**纯空窗**：窗口没了、新窗口还没起。
+            //   用户在这段时间里会以为"只关闭了没重启"，然后手动去点图标
+            //   （而手动点的那个会撞上单实例锁）。
+            //
+            //   改成：尽快确认死亡，然后立刻拉起 —— 总等待上限 500ms。
+            '    const t0 = Date.now();',
+            '    while (alive(shellPid) && Date.now() - t0 < 500) await wait(50);',
+            "    log('shell alive=' + alive(shellPid) + ' waited=' + (Date.now() - t0) + 'ms');",
             '  }',
-            '  await wait(1200);',
+            // 只留一个很短的缓冲：让单实例锁和 GPU 子进程收尾。
+            // 实测 taskkill 本身约 390ms，锁的释放通常在它返回前后就完成了。
+            '  await wait(150);',
             '  try {',
             `    const child = spawn(${JSON.stringify(appPath)}, [], { detached: true, stdio: 'ignore' });`,
             '    child.unref();',

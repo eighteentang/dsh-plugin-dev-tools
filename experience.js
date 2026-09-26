@@ -68,8 +68,18 @@ export function firstNonEmpty(candidates) {
 /** 一次装配最多注入多少条 —— 防止库变大后把提示词撑爆 */
 const MAX_ENTRIES = 60;
 
-/** 每条症状/解法在索引里的截断长度 */
-const CLIP = 100;
+/**
+ * 索引里的截断长度 —— **分开设，因为两种字段的职责不同**：
+ *
+ *   · 症状：用来"对上号"。太短就对不上，所以给得宽（100）。
+ *   · 解法：只用来判断"这条值不值得去读全文"。给一行提示就够，
+ *           真正的解法在全文里 —— 所以截得短（60）能省掉近一半体积。
+ *
+ * 实测：两处都从 100 降到 60 会让索引从 4414 降到约 2900 字符；
+ * 而只降解法、保留症状宽度，是最划算的组合（见 verify-injection-size.mjs）。
+ */
+const CLIP_SYMPTOM = 100;
+const CLIP_SOLUTION = 60;
 
 /**
  * 从文件里读元信息头。
@@ -187,7 +197,9 @@ export function buildExperienceText(filePath) {
   if (!parsed.ok || parsed.entries.length === 0) return '';
 
   const meta = parsed.meta ?? {};
-  const clip = (s) => (s.length > CLIP ? `${s.slice(0, CLIP)}…` : s);
+  // 症状给宽（用来对上号），解法给窄（只用来判断值不值得读全文）
+  const clipSymptom = (s) => (s.length > CLIP_SYMPTOM ? `${s.slice(0, CLIP_SYMPTOM)}…` : s);
+  const clipSolution = (s) => (s.length > CLIP_SOLUTION ? `${s.slice(0, CLIP_SOLUTION)}…` : s);
 
   // ⚠ 只注入**通用**条目。
   //
@@ -212,8 +224,8 @@ export function buildExperienceText(filePath) {
 
   for (const e of general) {
     lines.push(`- **${e.id} ${e.title}**`);
-    if (e.symptom !== '') lines.push(`  - 症状：${clip(e.symptom)}`);
-    if (e.solution !== '') lines.push(`  - 解法：${clip(e.solution)}`);
+    if (e.symptom !== '') lines.push(`  - 症状：${clipSymptom(e.symptom)}`);
+    if (e.solution !== '') lines.push(`  - 解法：${clipSolution(e.solution)}`);
   }
 
   return lines.join('\n');
@@ -289,6 +301,42 @@ export function appendExperience(entry, filePath) {
     }
     const title = String(entry?.title ?? '').trim() || symptom.slice(0, 30);
     const detail = String(entry?.detail ?? '').trim();
+
+    // ── 格式校验：拦掉会破坏"按行解析"的写法 ──
+    //
+    // ⚠ 这一段是**结构性的防线**，不是文档。
+    //
+    //   解析器按行工作、以 `## ` 和单独一行的 `---` 作分隔。
+    //   所以正文里出现围栏代码块、`## ` 开头的行、或单独一行的 `---`，
+    //   都会让**后面的条目被解析错位** —— 而且是静默的。
+    //
+    //   我一开始只在工具的 description 里写了"不要用围栏"，
+    //   结果**自己写 E20 时就用了**（因为描述是"被动信息"，见经验库 E19）。
+    //   所以改成在这里硬拦：用错格式直接拒绝，并告诉它正确写法。
+    const FIELDS = { 症状: symptom, 解法: solution, 细节: detail };
+    for (const [label, value] of Object.entries(FIELDS)) {
+      if (value === '') continue;
+      if (/^\s*```/m.test(value)) {
+        return {
+          ok: false,
+          error: `${label}里出现了 \`\`\` 围栏代码块 —— 解析器按行工作，围栏会让后面的条目错位。`
+            + '请改用行内代码（`x`）或缩进式代码块（每行前 4 个空格）。',
+        };
+      }
+      if (/^#{1,6} /m.test(value)) {
+        return {
+          ok: false,
+          error: `${label}里有以 # 开头的行 —— 那会被当成标题/条目分隔符。`
+            + '标题由工具自动生成，正文里请去掉 # 开头。',
+        };
+      }
+      if (/^\s*-{3,}\s*$/m.test(value)) {
+        return {
+          ok: false,
+          error: `${label}里有单独一行的 --- —— 那是条目之间的分隔符，会让解析断在这里。`,
+        };
+      }
+    }
 
     // ── 第一步：把新条目接到正文末尾
     const before = readFileSync(path, 'utf8');
