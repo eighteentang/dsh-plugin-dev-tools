@@ -1,0 +1,17 @@
+# 开发工具箱 组合包补丁
+#
+# 为什么单独一个包：它含"读 DOM 做定位"这类只有开发者需要的能力，
+# 不该出现在用户拿到的成品里。产品只装 dsh-plugin-qq-bridge-v4。
+#
+# 行 id 与产品区分开（dev-tools），避免与 QQ 插件互相覆盖配置。
+- insert:
+    - id: dev-tools
+      name: dsh-plugin-dev-tools
+      config:
+        # 开发模式的启动初值。真正生效的开关在插件设置页里，状态存浏览器 localStorage
+        #（profile 的 config 写回需要审批、且通常要重启才生效，不适合当交互开关）。
+        enabled: false
+        # 悬浮框触发方式：'alt-hover'（按住 Alt 悬停）| 'hover'（直接悬停）| 'click'（点击元素）
+        trigger: 'alt-hover'
+        # 开发规矩注入范围：'session'（仅当前会话）| 'global'（所有会话）| 'off'
+        ruleScope: 'session'
