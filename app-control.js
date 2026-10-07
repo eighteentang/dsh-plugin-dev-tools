@@ -54,7 +54,7 @@
 
 import { createServer } from 'node:http';
 import { spawn, execFileSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { experienceStatus } from './experience.js';
@@ -253,6 +253,28 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode }) {
       return;
     }
 
+    // ── /dev-tools/requirement-template：需求模板正文（只读）──
+    //
+    // 为什么由宿主来读：客户端半跑在浏览器环境里，拿不到插件目录里的文件
+    //（它只有 fetch，没有 fs）。所以模板正文放 templates/requirement-template.md，
+    // 由宿主读出来交给客户端。
+    //
+    // ⚠ 每次请求**现读**，不做缓存 —— 这样用户改模板文件之后
+    // **不用重启客户端**，下一次按键就拿到新内容。这是选这个方案的全部理由。
+    if (url.pathname === '/dev-tools/requirement-template') {
+      try {
+        const text = readFileSync(new URL('./templates/requirement-template.md', import.meta.url), 'utf8');
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, text }));
+      } catch (error) {
+        const reason = String(error?.message ?? error);
+        logLine(`读需求模板失败：${reason}`);
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: reason }));
+      }
+      return;
+    }
+
     // ── /dev-tools/diagnose：把"工具为什么没注册"查清楚 ──
     //
     // 为什么需要它：注册失败时**什么都看不见**（Host 插件的 logger 桌面不落盘，
@@ -297,12 +319,17 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode }) {
     // ══════════════════════════════════════════════════════════════════════
     // ⚠ /dev-tools/restart —— **已不再被界面使用**（2026-09-26），保留作参考。
     //
-    // 为什么弃用（查证结论见经验库 E21）：
+    // 为什么弃用（查证结论见经验库 E21；2026-10-07 在 0.2.0-rc.2 上复核过）：
     //   DSH **没有对外的重启接口**。真正的重启原语是 lib/main.js 里的
     //     restart: () => { app.relaunch(); quitWithoutConfirmation(); }
-    //   它写在崩溃恢复对象里，**只被 fail() 调用，没有任何 IPC 暴露**
-    //   （42 个 preload 通道里没有 restart/quit/shutdown；
-    //     window.dshDesktop 只有 browser/keyboard/shortcuts/updates）。
+    //   全库只有两处调用：
+    //     ① 崩溃恢复对象的 restart（只被 fail() 调用）
+    //     ② 应用菜单项「重启应用与 Host」—— 但它被 `...development ? [...] : []`
+    //        包着，而 development = !app.isPackaged，**安装版一定没有**。
+    //   复核方法：node tools/diag/dump-ipc-channels.mjs
+    //     45 个 preload 通道里没有 restart/quit/shutdown；window.dshDesktop 只有
+    //     browser / deviceInfo / keyboard / shortcuts / updates，没有生命周期控制。
+    //     ⚠ E21 当时记的是 42 个通道 —— 版本更新后数字会变，别把这个数字当常量。
     //
     //   所以下面这套"从外部杀外壳再拉起"是唯一能做到重启的办法，但代价大：
     //     · 实测约 **64 秒**才恢复可用（DSH 自己的恢复框只要约 7 秒）

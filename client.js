@@ -1014,6 +1014,301 @@ window.__ModuleLoader__.load({
           };
         },
       },
+
+      {
+        id: 'template-hotkey',
+        name: '需求模板快捷键',
+        summary: '在对话输入框里连按两次 `（Tab 上方那个键），在光标处插入一份"需求模板"骨架。',
+        usage: '① 把光标放进对话输入框（本工具**只在输入框聚焦时**生效，在别处连按不受影响）。'
+             + '② 连按两次 ` 键（间隔 400ms 以内）。'
+             + '③ 模板出现在光标处，直接改内容。'
+             + '④ 只按一次不会丢字符：等不到第二次时，那个字符会自己补回输入框'
+             + '（你接着按别的键的话，它会在那个键之前补回来）。'
+             + '⚠ 实测限制：**中文输入法状态下这个键会被输入法接管**，那条路径还没验证通过'
+             + '（代码里已按"输入法强行插入"处理，但没测过）—— 请先用英文状态。'
+             + '模板正文放在 `templates/requirement-template.md`，改它**不用重启客户端**。',
+        defaultEnabled: true,
+
+        /**
+         * 为什么这样接线（三条都别改成"通用经验"写法）：
+         *
+         * ① **写入走官方 API，不去改 DOM。**
+         *    `inputActions.captureInsertion()` 捕获草稿选区与版本；
+         *    `insertText(text, span)` 仅在版本未变且编辑器允许编辑时，
+         *    插入一次**可撤销**的纯文本编辑。
+         *    受控编辑器上直接改 DOM 的 value 会"看着有字、发出去是空的"。
+         *
+         * ② **槽位用 `conversation.composer.dock`。**
+         *    槽位契约（在 dsh-cordis-client-runner 里）写明：kind=list
+         *    （用自己的 id 就是**并列新增**，不覆盖任何现有条目）、scope=session、
+         *    replaceRisk=none，且 standardProps 里带 `inputActions` 与 `sessionId`。
+         *    ⚠ 它的 owner props 是 `{}`，但 **standardProps 是另外合并进来的** ——
+         *    别看到 `renderSlot(..., {})` 就以为拿不到 inputActions（我一开始就是这么误判的）。
+         *
+         * ③ **连击判定照抄官方 StopSequence**（dsh-client-ui-conversation/lib/client.js）：
+         *    用 performance.now() 记"第一次按下的截止时刻"，超时即丢弃；
+         *    中间出现别的按键就清空序列。
+         */
+        enable(host) {
+          const { ctx, React } = host;
+
+          const CONTROL_URL = 'http://127.0.0.1:8800/dev-tools/requirement-template';
+          const INTERVAL_MS = 400;
+
+          // 宿主没起来 / 模板文件读不到时的兜底 —— 不让整个功能失效
+          const FALLBACK = [
+            '【任务】', '【背景】', '【目标】', '【不做什么】',
+            '【输入】', '【输出】', '【验收】', '【卡住】问，不猜',
+          ].join('\n');
+
+          let cached = '';
+
+          /**
+           * 取模板正文。
+           * ⚠ 每次现取，不在挂载时缓存 —— 这样改模板文件**不用重启客户端**。
+           * 取不到就退回上一次成功的正文（再没有才用兜底），并把原因打进 console。
+           */
+          async function readTemplate() {
+            try {
+              const res = await fetch(CONTROL_URL);
+              if (res.ok === true) {
+                const data = await res.json();
+                if (data !== null && data !== undefined && data.ok === true
+                    && typeof data.text === 'string' && data.text !== '') {
+                  cached = data.text;
+                  return cached;
+                }
+              }
+            } catch (error) {
+              console.warn('[dev-tools] 需求模板取不到，用兜底：', error);
+            }
+            return cached === '' ? FALLBACK : cached;
+          }
+
+          /** 输入框是否真的拿到焦点 —— 不在输入框里就绝不介入。 */
+          function editableFocused() {
+            const el = globalThis.document?.activeElement;
+            if (el === null || el === undefined) return false;
+            const tag = String(el.tagName ?? '').toLowerCase();
+            return tag === 'textarea' || tag === 'input' || el.isContentEditable === true;
+          }
+
+          /** 在光标处插入模板（官方 API）。被拒绝时说明原因，不静默吞掉。 */
+          function insertTemplate(actions, presetSpan) {
+            readTemplate().then((text) => {
+              let span = presetSpan ?? null;
+              if (span === null) {
+                try {
+                  span = actions.captureInsertion();
+                } catch (error) {
+                  console.warn('[dev-tools] captureInsertion 失败：', error);
+                  return;
+                }
+              }
+              let result;
+              try {
+                result = actions.insertText(text, span);
+              } catch (error) {
+                console.warn('[dev-tools] insertText 抛错：', error);
+                return;
+              }
+              Promise.resolve(result).then((applied) => {
+                if (applied !== true) {
+                  // 官方语义：插入被拒绝时由调用方保留结果、等用户操作。
+                  // 这里至少要让人看得见，而不是装作成功。
+                  console.warn('[dev-tools] 模板插入被拒绝（可能正在提交，或草稿版本已变）');
+                }
+              }).catch((error) => {
+                console.warn('[dev-tools] insertText 异步失败：', error);
+              });
+            });
+          }
+
+          function TemplateHotkey(props) {
+            const actionsRef = React.useRef(null);
+            actionsRef.current = props === null || props === undefined
+              ? null
+              : (props.inputActions ?? null);
+
+            /**
+             * 当前草稿正文 —— 用来判断"输入法是不是已经自己把字符插进去了"。
+             * `useInput` 是 composer.dock 契约里给的标准 prop（拿不到就退化成空串，
+             * 校验器就是用空 props 渲染的）。
+             */
+            const draft = (props !== null && props !== undefined
+              && typeof props.useInput === 'function')
+              ? props.useInput((state) => state?.draft ?? '')
+              : '';
+            const draftRef = React.useRef('');
+            draftRef.current = typeof draft === 'string' ? draft : '';
+
+            const markerRef = React.useRef(null);
+            /** 挂起中的"第一次按下"：等第二次；等不到就把这个字符补回输入框。 */
+            const pendingRef = React.useRef(null);
+
+            React.useEffect(() => {
+              const w = globalThis.window;
+              // 校验器/非浏览器环境下没有 window —— 直接不装监听，别抛错
+              if (w === null || w === undefined || typeof w.addEventListener !== 'function') {
+                return undefined;
+              }
+
+              const perfNow = () => (globalThis.performance?.now?.() ?? Date.now());
+
+              /** 输入框确实可写：焦点在可编辑元素上 + 本会话的输入区可见。 */
+              const writable = () => {
+                if (!editableFocused()) return false;
+                const marker = markerRef.current;
+                if (marker === null || marker.isConnected !== true) return false;
+                if (typeof marker.getClientRects !== 'function') return false;
+                return marker.getClientRects().length > 0;
+              };
+
+              /**
+               * 输入法是不是已经**自己**把字符插进草稿了。
+               *
+               * 中文输入法开着时，这个键的 keydown 是 keyCode 229 ——
+               * 浏览器**不听我们的 preventDefault**，字符会照插。
+               * 所以不能靠"吞掉"，只能靠**证据**：
+               *   · 草稿正好长了 count 个字符
+               *   · 且那 count 个字符正好是这次按键对应的字符
+               * 两条都成立才认。认了以后：单按时**不再补回**（否则变成两个字符），
+               * 连按时**连这两个残留字符一起替换掉**（不留垃圾）。
+               */
+              const imeInserted = (count) => {
+                const pending = pendingRef.current;
+                if (pending === null || pending.span === null) return false;
+                const now = draftRef.current;
+                if (now.length !== pending.draftLen + count) return false;
+                return now.slice(pending.span.start, pending.span.start + count)
+                  === pending.char.repeat(count);
+              };
+
+              /**
+               * 把挂起的那次按键**补回输入框**。
+               *
+               * 为什么需要它：用户要"单按一次不能丢反引号"。
+               * 第一次按下先吞掉（连按时输入框里才不留多余字符），
+               * 等不到第二次时再把字符插回去。三条触发路径：
+               *   · 超时（INTERVAL_MS 内没有第二次）
+               *   · **按了别的键** —— 这条最关键：此刻那个字符还没被插入，
+               *     我们先补回去，**顺序才是对的**（先反引号、后那个字符）
+               *   · 失焦 / 输入法开始组字 / 组件卸载
+               */
+              const restorePending = () => {
+                const pending = pendingRef.current;
+                if (pending === null) return;
+                pendingRef.current = null;
+                if (pending.timer !== null) clearTimeout(pending.timer);
+                if (!writable()) return;               // 已经离开输入框 → 不往别处写
+                // 输入法已经自己插进去了 → 别再补一个（否则单按会变成两个字符）
+                if (imeInserted(1)) return;
+                const actions = actionsRef.current;
+                if (actions === null) return;
+                let span;
+                try {
+                  const fresh = actions.captureInsertion();
+                  // 草稿没被改过 → 用第一次按下时的位置，字符回到原位
+                  span = (pending.span !== null && fresh.draftRev === pending.span.draftRev)
+                    ? pending.span
+                    : fresh;
+                } catch (error) {
+                  console.warn('[dev-tools] 补回字符时取不到选区：', error);
+                  return;
+                }
+                try {
+                  actions.insertText(pending.char, span);
+                } catch (error) {
+                  console.warn('[dev-tools] 补回字符失败：', error);
+                }
+              };
+
+              const onKeyDown = (event) => {
+                // 别的按键 → 先把挂起的字符补回去，这次按键照常发生
+                if (event.code !== 'Backquote') { restorePending(); return; }
+                // 只认物理键 Backquote（Tab 上方那个），且不带任何修饰键
+                if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+                if (event.isComposing === true) return;
+                // ⚠ 这里**不能**再判 `event.keyCode === 229`：
+                //   中文输入法开着时每一次 keydown 的 keyCode 都是 229
+                //   （key 是 'Process'），加这条就变成"只有英文状态才生效"—— 实测踩过。
+                if (!writable()) return;
+
+                // 先吞掉（英文状态下有效；中文状态下拦不住输入法，见 imeInserted）
+                event.preventDefault();
+                event.stopPropagation();
+
+                const actions = actionsRef.current;
+                if (actions === null) return;
+
+                const now = perfNow();
+                const pending = pendingRef.current;
+                if (pending !== null && now <= pending.deadline) {
+                  // 第二次按下 → 插模板
+                  if (pending.timer !== null) clearTimeout(pending.timer);
+                  const twoLanded = imeInserted(2);     // 必须在清掉 pending 之前问
+                  pendingRef.current = null;
+                  let span = null;
+                  try {
+                    const fresh = actions.captureInsertion();
+                    // 输入法已经把两个字符插进来了 → 连它们一起替换，别留下 ··
+                    span = twoLanded
+                      ? { start: fresh.start - 2, end: fresh.start, draftRev: fresh.draftRev }
+                      : fresh;
+                  } catch (error) {
+                    console.warn('[dev-tools] 第二次按下时取不到选区：', error);
+                  }
+                  insertTemplate(actions, span);
+                  return;
+                }
+
+                // 第一次按下 → 挂起，等第二次
+                restorePending();                      // 处理"上一次还没到点又按了一次"
+                let span = null;
+                try { span = actions.captureInsertion(); } catch { span = null; }
+                const char = (typeof event.key === 'string' && event.key.length === 1)
+                  ? event.key
+                  : '`';
+                const timer = setTimeout(() => { restorePending(); }, INTERVAL_MS + 20);
+                pendingRef.current = {
+                  deadline: now + INTERVAL_MS, span, char, timer,
+                  draftLen: draftRef.current.length,
+                };
+              };
+
+              const onCompositionStart = () => { restorePending(); };
+              const onBlur = () => { restorePending(); };
+
+              w.addEventListener('keydown', onKeyDown, true);
+              w.addEventListener('compositionstart', onCompositionStart, true);
+              w.addEventListener('blur', onBlur);
+              return () => {
+                restorePending();
+                w.removeEventListener('keydown', onKeyDown, true);
+                w.removeEventListener('compositionstart', onCompositionStart, true);
+                w.removeEventListener('blur', onBlur);
+              };
+            }, []);
+
+            // 零尺寸但**有盒子**的标记元素。
+            // ⚠ 不能用 display:none —— 那样它没有盒，就没法拿它判断
+            //   "本会话的输入区是不是当前显示的那一个"。
+            return h('span', {
+              ref: markerRef,
+              'data-dvt-template-hotkey': '',
+              'aria-hidden': 'true',
+              style: { display: 'block', width: 0, height: 0, overflow: 'hidden' },
+            });
+          }
+
+          return ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+            name: 'conversation.composer.dock',
+            id: 'dev-tools-template-hotkey',
+            order: 100,
+            label: () => '需求模板快捷键',
+          }, TemplateHotkey));
+        },
+      },
     ];
 
     // ───────────────────────────────────────────── 运行时（真注销）

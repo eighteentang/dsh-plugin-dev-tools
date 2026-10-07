@@ -69,17 +69,36 @@ export function firstNonEmpty(candidates) {
 const MAX_ENTRIES = 60;
 
 /**
- * 索引里的截断长度 —— **分开设，因为两种字段的职责不同**：
+ * 索引的**自身预算**（字符）。
  *
- *   · 症状：用来"对上号"。太短就对不上，所以给得宽（100）。
- *   · 解法：只用来判断"这条值不值得去读全文"。给一行提示就够，
- *           真正的解法在全文里 —— 所以截得短（60）能省掉近一半体积。
+ * 为什么要有它：经验库只会越来越长，而这段文本**每一步都注入**。
+ * 靠"人工发现超了再手工收紧截断"不可持续 —— 每加几条就会撞一次
+ * （2026-10-07 就是这么撞的：23 条涨到 30 条时，索引 5690 + 清单 1817 = 7507 > 7000）。
+ * 所以索引按预算**自己装配**，而不是靠人盯着。
  *
- * 实测：两处都从 100 降到 60 会让索引从 4414 降到约 2900 字符；
- * 而只降解法、保留症状宽度，是最划算的组合（见 verify-injection-size.mjs）。
+ * 取值依据：总量预算 7000（见 verify-injection-size.mjs），自检清单约 1817 字符，
+ * 所以索引给 4300，留出约 900 的余量。
  */
-const CLIP_SYMPTOM = 100;
-const CLIP_SOLUTION = 60;
+export const INDEX_BUDGET = 4300;
+
+/**
+ * 截断档位：**从宽到紧依次试**，装得下就整份装下。
+ *
+ * 为什么先收紧截断、而不是直接砍条目：
+ *   砍掉的条目在提示词里**彻底消失**，AI 连"有这条经验"都不知道；
+ *   收紧截断至少保留"标题 + 症状"，仍然能对上号。
+ * 只有最紧档也装不下，才按预算截断条目列表，并写明还有多少条没列出。
+ *
+ * 症状给宽、解法给窄（职责不同）：
+ *   症状用来"对上号"，太短就对不上；
+ *   解法只用来判断"这条值不值得去读全文"，真正的解法在全文里。
+ */
+const CLIP_TIERS = [
+  { symptom: 100, solution: 60 },
+  { symptom: 80, solution: 45 },
+  { symptom: 60, solution: 30 },
+  { symptom: 40, solution: 20 },
+];
 
 /**
  * 从文件里读元信息头。
@@ -189,6 +208,10 @@ export function parseExperienceFile(filePath) {
  * 只给"症状 → 解法要点"，不给全文 —— 全文有几千字，每轮都塞会挤占 context。
  * 索引让 AI 知道"有这条经验、去哪读细节"就够了。
  *
+ * **预算感知**（INDEX_BUDGET）：装得下就整份装下；装不下先收紧截断档；
+ * 最紧档还装不下才截断条目列表，并写明还有多少条没列出。
+ * 这样"经验库变长"不会再让注入总量失控。
+ *
  * @param {string} [filePath]
  * @returns {string} 没有条目时返回空串（提示词里就不出现这一段）
  */
@@ -197,9 +220,6 @@ export function buildExperienceText(filePath) {
   if (!parsed.ok || parsed.entries.length === 0) return '';
 
   const meta = parsed.meta ?? {};
-  // 症状给宽（用来对上号），解法给窄（只用来判断值不值得读全文）
-  const clipSymptom = (s) => (s.length > CLIP_SYMPTOM ? `${s.slice(0, CLIP_SYMPTOM)}…` : s);
-  const clipSolution = (s) => (s.length > CLIP_SOLUTION ? `${s.slice(0, CLIP_SOLUTION)}…` : s);
 
   // ⚠ 只注入**通用**条目。
   //
@@ -210,8 +230,9 @@ export function buildExperienceText(filePath) {
   if (general.length === 0) return '';
 
   const skipped = parsed.entries.length - general.length;
+  const capped = general.slice(0, MAX_ENTRIES);
 
-  const lines = [
+  const header = [
     '',
     '## 开发经验索引（动手前先扫一眼有没有对得上的症状）',
     '',
@@ -220,15 +241,53 @@ export function buildExperienceText(filePath) {
       + (skipped > 0 ? `（另有 ${skipped} 条项目特定，未列出）` : '')
       + `　更新于：${meta.updatedAt ?? '未知'}`,
     '',
-  ];
+  ].join('\n');
 
-  for (const e of general) {
-    lines.push(`- **${e.id} ${e.title}**`);
-    if (e.symptom !== '') lines.push(`  - 症状：${clipSymptom(e.symptom)}`);
-    if (e.solution !== '') lines.push(`  - 解法：${clipSolution(e.solution)}`);
+  const clip = (text, limit) => (text.length > limit ? `${text.slice(0, limit)}…` : text);
+
+  const renderEntry = (entry, tier) => {
+    const out = [`- **${entry.id} ${entry.title}**`];
+    if (entry.symptom !== '') out.push(`  - 症状：${clip(entry.symptom, tier.symptom)}`);
+    if (entry.solution !== '') out.push(`  - 解法：${clip(entry.solution, tier.solution)}`);
+    return out;
+  };
+
+  // 硬上限（条数）也要说清楚，否则"条目去哪了"没人知道
+  const overCap = general.length > capped.length
+    ? `\n\n  （另有 ${general.length - capped.length} 条未列出 —— 单次至多注入 ${MAX_ENTRIES} 条，见经验库全文）`
+    : '';
+
+  // ① 先试各档截断：能装下就**整份装下**（所有条目都还在，只是描述变短）
+  //
+  // ⚠ 判断的是**最终文本**（含末尾的省略说明）—— 只算正文会漏掉那几十字符。
+  //   实测算出 4322 > 4300，被校验器里的"合成超长库压测"抓到过一次。
+  for (const tier of CLIP_TIERS) {
+    const body = capped.flatMap((entry) => renderEntry(entry, tier));
+    const text = [header, ...body].join('\n') + overCap;
+    if (text.length <= INDEX_BUDGET) return text;
   }
 
-  return lines.join('\n');
+  // ② 最紧档还是装不下 → 逐条装；每加一条都按"最终文本"判断，放不下就退回
+  const tightest = CLIP_TIERS[CLIP_TIERS.length - 1];
+  const body = [];
+  let shown = 0;
+  const assemble = (omitted) => {
+    const note = omitted > 0
+      ? `\n\n  ⚠ 索引已到 ${INDEX_BUDGET} 字符预算：另有 ${omitted} 条未列出 —— 完整列表见经验库全文。`
+      : '';
+    return [header, ...body].join('\n') + note + overCap;
+  };
+  for (const entry of capped) {
+    const rendered = renderEntry(entry, tightest);
+    body.push(...rendered);
+    shown += 1;
+    if (assemble(general.length - shown).length > INDEX_BUDGET) {
+      body.length -= rendered.length;      // 放不下 → 退回这一条
+      shown -= 1;
+      break;
+    }
+  }
+  return assemble(general.length - shown);
 }
 
 /**
