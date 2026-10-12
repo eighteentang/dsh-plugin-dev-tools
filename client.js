@@ -455,7 +455,15 @@ window.__ModuleLoader__.load({
       const hotApplied = files.filter((f) => f.verdict === 'applied-immediately');
       const svc = self.services ?? {};
 
-      return h('div', { style: { fontSize: 13, overflowY: 'auto' } },
+      // ⚠ 这个面板挂在**会话区**（宽容器）里，不是窄侧栏 ——
+      //   限宽 + 居中 + 内边距，否则每一行会横跨整个会话区、右边全是空白。
+      return h('div', {
+        style: {
+          fontSize: 13, overflowY: 'auto',
+          width: '100%', maxWidth: 900, margin: '0 auto',
+          padding: '14px 20px 24px', boxSizing: 'border-box',
+        },
+      },
 
         // ① 结论条
         h('div', {
@@ -1667,54 +1675,27 @@ window.__ModuleLoader__.load({
           label: '开发工具',
         }, () => h(DevToolsPanel, { runtime })));
 
-        // ── 右侧栏「开发诊断」tab（2026-10-12 加）──────────────────────────────
+        // ── 会话区 tab 条上的「开发诊断」（2026-10-12 从右侧栏搬过来）──────────
         //
-        // 契约照抄隔壁的 dsh-context（它是同一套 seat 的现成范例，注释里写明了纪律）。
-        // 三件要一起注册：
-        //   ① `ctx.sidebarRightTabs.register({ id, kind, title, guide })` 注册 **tab 类型**
-        //      —— `guide` 那一条让它在侧栏的"引导页"里被列出来（用户挑一次才出现，
-        //         跟官方 Files 那个 tab 一样，不是默认就摆在"上下文"旁边）
-        //   ② `sidebar.right.pane.tab`        → 面板本体
-        //   ③ `sidebar.right.pane.tab.title`  → chip 上的图标与标题
+        // 位置由 `conversation.view` 这个 **list 槽**决定 —— **注册即出现在 tab 条上**，
+        // 用户不需要先去哪里"挑一次"。顺序靠 order 升序：
+        //   官方 Chat = 0，Trajectory = 10，dsh-context 的「上下文」= 20
+        // 我们填 30 → 正好落在「上下文」右边。
         //
-        // ⚠ 三条纪律（都不是我发明的，是 dsh-context 的注释里明确写的）：
-        //   · `kind` **必须带命名空间** —— 注册表在 kind 与别的注册撞车时会**抛**
-        //   · 这是**可选契约**（只在 0.1.5+ 有）→ 必须走 `ctx.inject(['sidebarRightTabs'])`，
-        //     旧版本上回调不触发、什么都不注册，而不是把插件搞挂
-        //   · 整段包 try/catch —— 一个畸形的注册表应该让"侧栏没有这个 tab"，
-        //     而不是把浏览器搞崩
+        // ⚠ 为什么不用右侧栏那一套（`sidebarRightTabs` + `sidebar.right.pane.tab*`）：
+        //   那套必须带一个 `guide` 条目，用户得**先去侧栏的引导页挑一次**才会出现
+        //   （官方 Files 与 dsh-context 的「上下文」都是这个形态）——
+        //   而这里要的是"默认就摆在那儿"。契约照抄 dsh-context 自己的 conversation.view 注册：
+        //   `{ name, id, order, label }`，组件拿到会话标准 props（sessionId / useProjection / …），
+        //   我们的面板不用它们，透传即可。
         try {
-          ctx.inject(['sidebarRightTabs'], (scoped) => {
-            const tabs = scoped?.sidebarRightTabs;
-            if (tabs === undefined || typeof tabs.register !== 'function') return undefined;
-            const disposers = [];
-            const ownIt = (r) => { if (typeof r === 'function') disposers.push(r); };
-            try {
-              ownIt(tabs.register({
-                id: 'dev-tools-diagnostics',
-                kind: 'dev-tools',
-                title: () => '开发诊断',
-                guide: [{
-                  order: 30, // 排在官方 Files(10) 与 dsh-context(20) 之后
-                  title: () => '开发诊断',
-                  description: () => '现在跑的是哪一份代码、热重载有没有在监听、进程里有哪些服务',
-                }],
-              }));
-              ownIt(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-                name: 'sidebar.right.pane.tab',
-                key: 'dev-tools-diagnostics',
-              }, () => h(DiagnosticsTab, null))));
-              ownIt(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
-                name: 'sidebar.right.pane.tab.title',
-                key: 'dev-tools-diagnostics',
-              }, () => '开发诊断')));
-            } catch {
-              for (const d of disposers) d();
-              return undefined;
-            }
-            return () => { for (const d of disposers) d(); };
-          });
-        } catch { /* 拿不到 sidebarRightTabs 就算了，不影响其它功能 */ }
+          ctx.slots.inject('conversation.view', () => ctx.slots.register({
+            name: 'conversation.view',
+            id: 'dev-tools-diagnostics',
+            order: 30,
+            label: () => '开发诊断',
+          }, (props) => h(DiagnosticsTab, props ?? null)));
+        } catch { /* 槽位声明不了就算了，不影响其它功能 */ }
 
         // 启动时按持久化状态恢复：总开关开着就启用勾选的工具。
         // 放在 inject 之后 —— 工具注册它自己的 slot 时要保证槽位已声明。

@@ -39,6 +39,10 @@
 import { startAppControl } from './app-control.js';
 import { installDevRuleSection, isDevModeOn, setDevMode, onDevModeChange, getDevModeStamp } from './dev-rule.js';
 import { installExperienceTool, probeExperienceTool } from './experience-tool.js';
+// ⚠ 2026-10-12：这一行原本**漏了**，而第 157 行的日志调用了 `firstNonEmpty` →
+//   ReferenceError → apply 中途失败、插件"未激活"，宿主退出后弹故障恢复框。
+//   它定义在 experience.js:60，dev-rule.js / experience-tool.js 都 import 了它。
+import { firstNonEmpty } from './experience.js';
 import { collectSelfCheck, appendSelfCheckLog } from './self-check.js';
 import { openLogChannel } from './log-channel.js';
 import { homedir } from 'node:os';
@@ -113,37 +117,9 @@ export function apply(ctx, config) {
   //   · diagnose   诊断："工具为什么没注册"
   //   · getDevMode 读开关状态（内存态，不落盘）
   //   · setDevMode 写开关状态，并**立刻通知订阅者**（工具据此注册/撤下）
-  let control = null;
-  try {
-    control = startAppControl({
-      appPath: findAppPath(),
-      logFile: undefined,          // 用缺省的 homedir 推导路径
-      getDevMode: () => isDevModeOn(),
-      // ⚠ 必须把 stamp 一起传下去 —— 早先写成 `(enabled) => setDevMode(enabled)`，
-      // 把时间戳丢了，于是"过期消息保护"形同虚设。
-      setDevMode: (enabled, stamp) => setDevMode(enabled, stamp),
-      // 「为什么我的改动没生效」自证（2026-10-12 加）：宿主半收集，走 /dev-tools/self-check 给出去。
-      // 它回答的是"磁盘上的代码，和正在跑的这一份，是不是同一份" —— 用哈希判，不用 mtime
-      // （touch 会刷新 mtime 而内容没变 → 用 mtime 会假报"未生效"）。
-      selfCheck: () => collectSelfCheck(ctx),
-      // 日志通道：客户端 tab 靠它读回最近若干行（浏览器侧没有 fs）
-      logTail: (n) => log.tail(n),
-      diagnose: () => ({
-        devMode: isDevModeOn(),
-        devModeStamp: getDevModeStamp(),
-        hasCtxGet: typeof ctx.get === 'function',
-        tool: probeExperienceTool(ctx, config.experienceFile),
-      }),
-    });
-    // 端口被占用这件事**不在这里判**：`server.listen()` 的 'error' 是**异步**触发的，
-    // 同步读 `control.listenError` 几乎必然读到 null —— 那就成了一个
-    // "看着像兜底、实际永远轮不到"的守卫（本文件 findAppPath 上面刚批过这种写法）。
-    // 它的权威落点有两处，都不需要这里再加一遍：
-    //   ① `~/.dsh/dev-tools.log` —— app-control.js 的 logLine 会写明"控制端口启动失败"
-    //   ② 设置页 —— 客户端连不上时会有明确横幅："开关状态没能通知给宿主侧"
-  } catch (error) {
-    ctx.logger?.warn?.(`dev-tools: 控制接口启动失败 —— ${String(error?.message ?? error)}`);
-  }
+  // ⚠ 「控制接口」的启动**故意挪到 apply 的最后**（2026-10-12）——
+  //   原因见下面 `ctx.effect` 之前那一段的注释：顺序错了会留下
+  //   "插件没激活、端口还在听"的僵尸服务，而客户端一请求 /self-check 就能把宿主带走。
 
   // 开发规矩注入 —— 见 dev-rule.js 的详细说明。
   // ── 日志通道（④）────────────────────────────────────────────────────
@@ -233,6 +209,50 @@ export function apply(ctx, config) {
       try { disposeChildEffect?.(); } catch { /* ignore */ }
     };
   });
+
+  // ── 控制接口：**放在最后开** ────────────────────────────────────────
+  //
+  // ⚠ 2026-10-12 的教训（顺序错了会放大故障）：
+  //   这段原来在 apply 开头（日志通道之前），而后面那句日志引用了没 import 的
+  //   `firstNonEmpty` → apply 中途失败、插件"未激活"，**但端口已经先起来了**：
+  //   留下"状态是失败、端口还在听"的僵尸服务。客户端一请求 /self-check，
+  //   就走进那条会杀死宿主的路（见 app-control.js 里 handle 上方的长注释）。
+  //
+  //   改成"先做所有可能抛异常的事，最后才开端口" —— 插件没激活，就不该有端口在听。
+  let control = null;
+  try {
+    control = startAppControl({
+      appPath: findAppPath(),
+      logFile: undefined,          // 用缺省的 homedir 推导路径
+      getDevMode: () => isDevModeOn(),
+      // ⚠ 必须把 stamp 一起传下去 —— 早先写成 `(enabled) => setDevMode(enabled)`，
+      // 把时间戳丢了，于是"过期消息保护"形同虚设。
+      setDevMode: (enabled, stamp) => setDevMode(enabled, stamp),
+      // 「为什么我的改动没生效」自证（2026-10-12 加）：宿主半收集，走 /dev-tools/self-check 给出去。
+      // 它回答的是"磁盘上的代码，和正在跑的这一份，是不是同一份" —— 用哈希判，不用 mtime
+      // （touch 会刷新 mtime 而内容没变 → 用 mtime 会假报"未生效"）。
+      selfCheck: () => collectSelfCheck(ctx),
+      // 日志通道：客户端 tab 靠它读回最近若干行（浏览器侧没有 fs）
+      logTail: (n) => log.tail(n),
+      diagnose: () => ({
+        devMode: isDevModeOn(),
+        devModeStamp: getDevModeStamp(),
+        hasCtxGet: typeof ctx.get === 'function',
+        tool: probeExperienceTool(ctx, config.experienceFile),
+      }),
+    });
+    log.log('info', `控制接口已请求启动：http://127.0.0.1:${control.port}/dev-tools/`);
+    // 端口被占用这件事**不在这里判**：`server.listen()` 的 'error' 是**异步**触发的，
+    // 同步读 `control.listenError` 几乎必然读到 null —— 那就成了一个
+    // "看着像兜底、实际永远轮不到"的守卫（本文件 findAppPath 上面刚批过这种写法）。
+    // 它的权威落点有两处，都不需要这里再加一遍：
+    //   ① `~/.dsh/dev-tools.log` —— app-control.js 的 logLine 会写明"控制端口启动失败"
+    //   ② 设置页 —— 客户端连不上时会有明确横幅："开关状态没能通知给宿主侧"
+  } catch (error) {
+    const reason = String(error?.message ?? error);
+    log.log('warn', `控制接口启动失败 —— ${reason}`);
+    ctx.logger?.warn?.(`dev-tools: 控制接口启动失败 —— ${reason}`);
+  }
 
   ctx.effect(() => () => {
     // fiber 优先（它是子插件的生命周期宿主）；拿不到就退回它返回的清理函数

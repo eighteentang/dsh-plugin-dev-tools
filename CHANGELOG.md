@@ -5,6 +5,59 @@
 
 ---
 
+## v1.3.1 · 2026-10-12
+
+一个**致命 bug 的修复** + 一处位置调整 + 一条新经验。主线是同一件事：
+**"一个请求里的错误"不该有能力带走整个宿主进程。**
+
+### 修复：`/self-check` 能把宿主进程杀掉（fatal）
+
+**为什么**：这条路由原来在 try 里**先** `res.writeHead(200)`、**再**求值内容。内容一抛异常
+就进 catch，而 catch **又写一次头** → `ERR_HTTP_HEADERS_SENT` 从 HTTP 处理器里逃出去 →
+宿主进程 `exit 1` → 外壳判定异常、弹故障恢复框 → 用户只能点「禁用第三方插件」，
+于是该 profile 里**所有第三方插件被打包摘掉**。实测 2026-10-12 19:39–19:40 一分钟内连崩三次
+（客户端点「开发诊断」，它加载时第一个请求就是这条路由）。
+
+**上游诱因**：`index.js` 的一句日志调用了**没 import** 的 `firstNonEmpty`（它定义在 `experience.js`）
+→ `ReferenceError` → 插件"未激活"；**但控制接口的启动写在那句日志之前**，端口已经起来了，
+留下"状态是失败、端口还在听"的僵尸服务。
+
+**做法**（缺一不可）：
+- 三条路由（`/self-check`、`/log`、`/requirement-template`）改成**先把 body 算完、再写头**，只写一次；
+  `JSON.stringify` 也放进 try —— 返回值里有循环引用时它同样会抛
+- 整个请求处理器套**外层 try/catch**：判 `res.headersSent` 决定是收尾还是回 500；
+  并把**被吞掉的原始异常写进日志**（上次就是因为它被吞掉，现场只剩第二次的错，真因不可见）
+- 控制接口的启动**挪到 apply 最后** —— 插件没激活，就不该有端口在听
+- 补上 `import { firstNonEmpty }`
+
+**守卫**：`verify-self-check.mjs` 新增 HTTP 回归 —— 让 `selfCheck` 抛异常 / 返回循环引用 / 正常返回，
+断言三种情况都拿到干净的 JSON 错误、且**进程 0 次 uncaughtException**。
+原校验器只直接调模块、从不走 HTTP，所以它全绿也拦不住这次崩溃。
+
+### 调整：「开发诊断」从右侧栏搬到**会话区 tab 条**
+
+**为什么**：要的位置是会话区 header 上「上下文」的右边。原实现用 `sidebarRightTabs` + `guide`，
+**必须先去侧栏引导页挑一次**才会出现 —— 那不是"默认就在那儿"。
+
+**做法**：改注册 `conversation.view`（list 槽，**注册即出现**）：`id: dev-tools-diagnostics`、
+`order: 30`（官方 `chat` = 0、`trajectory` = 10、dsh-context「上下文」= 20 → 30 正好在它右边）、
+`label: 开发诊断`。右侧栏那三处注册（`sidebarRightTabs` + 两个 `sidebar.right.pane.tab*`）**整段删除**，
+避免同一个面板挂两处。顺手做了宽视图排版（限宽 900px + 居中 + 内边距）——
+面板原本为窄侧栏设计，搬到宽容器会拉伸得空。`verify-diagnostics-tab.mjs` 的 19 项断言整套换成新契约。
+
+### 经验库 64 → 65 条（E65）
+
+E65：路由里「先 writeHead 再求值」的致命形态 —— 含**判据**（崩溃报告里同时出现真因与
+`ERR_HTTP_HEADERS_SENT`，且堆栈指向自己的 writeHead）与三条修法。
+
+### 顺带
+
+- 两个校验器的清理补上删除 `${TMP}.bak`：`verify-experience-format-gate` / `verify-experience-write`
+  原来只删临时副本，实测在 `tools/legacy/` 留了两份 ~155 KB 的备份（共 318 KB）。
+- README / package.json 的经验库数字同步到 65 条 / 指纹 `d825ad0c` / 全文 155 KB。
+
+---
+
 ## v1.3.0 · 2026-10-12
 
 四个新能力 + 一个元守卫。**主线是同一件事：让"坏了但不报"这类问题自己暴露出来。**

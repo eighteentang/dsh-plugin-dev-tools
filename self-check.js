@@ -126,10 +126,39 @@ export function serviceInventory(ctx) {
   };
 }
 
+/**
+ * 安全地取一个**服务**对象。
+ *
+ * ⚠ 为什么必须有这个函数（2026-10-12 实测的事故）：
+ *   cordis 的 ctx 是个代理，**读一个没有 inject 过的服务属性会直接抛**
+ *   —— 报 `cannot get property "hmr" without inject`。所以
+ *   `ctx?.hmr?.config` 这种写法**救不了**：可选链只能挡住"值是 undefined"，
+ *   挡不住"取这个属性本身抛异常"。
+ *   当时的表现：`/dev-tools/self-check` 每次都进 catch、返回 `{ok:false}`，
+ *   面板里"热重载"那一格永远是"拿不到" —— 而它本该显示"只监听配置"。
+ *
+ * 两条路，按优先级：
+ *   ① 直接取（插件已 inject 过该服务时可用）—— 包在 try 里
+ *   ② `ctx.reflect.get(name, false)` —— 免 inject 取值（cordis 内部反射表，
+ *      见经验库 E64）。strict=false 时拿不到就返回 undefined，不抛。
+ */
+export function readService(ctx, name) {
+  try {
+    const direct = ctx?.[name];
+    if (direct !== undefined && direct !== null) return direct;
+  } catch { /* 未 inject → 落到 ② */ }
+  try {
+    const viaReflect = ctx?.reflect?.get?.(name, false);
+    if (viaReflect !== undefined && viaReflect !== null) return viaReflect;
+  } catch { /* 反射表也不给，就当作没有 */ }
+  return undefined;
+}
+
 /** 读 profile 里对这个插件的依赖串（`link:...` 还是版本号）—— 第三条交叉验证 */
 function profileDependency(ctx) {
   try {
-    const dir = ctx?.profileContext?.dir;
+    const profileCtx = readService(ctx, 'profileContext');
+    const dir = profileCtx?.dir;
     if (typeof dir !== 'string' || dir === '') return null;
     const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
     const dep = { ...(pkg.dependencies ?? {}) }['dsh-plugin-dev-tools'];
@@ -141,7 +170,7 @@ function profileDependency(ctx) {
 
 /** 热重载状态。`root: []` 意味着**只监听配置、不监听源码**。 */
 export function hmrState(ctx) {
-  const cfg = ctx?.hmr?.config;
+  const cfg = readService(ctx, 'hmr')?.config;
   if (cfg === undefined || cfg === null) {
     return { available: false, root: null, note: '拿不到 hmr 服务（可能没启用，或要等 inject 回调）' };
   }

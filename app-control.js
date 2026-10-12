@@ -174,7 +174,19 @@ function logLine(message) {
  * @returns {{ dispose: () => void, port: number }}
  */
 export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck, logTail }) {
-  const server = createServer((req, res) => {
+  /**
+   * ⚠ 一个请求里的任何异常都**不许逃出去**（2026-10-12 实测的代价）。
+   *
+   * 那天 `/self-check` 先在 try 里 `res.writeHead(200)`、再求值内容；内容一抛异常
+   * 就进 catch，catch **又写一次头** → `ERR_HTTP_HEADERS_SENT` 从 HTTP 处理器里
+   * 逃出去 → 宿主进程 exit 1 → 外壳判定异常、弹故障恢复框 → 用户只能选
+   * 「禁用第三方插件」，三个插件全被摘掉。链路与现场见 CHANGELOG 与经验库。
+   *
+   * 所以这里两层都要：
+   *   ① 每条路由「先把 body 算完、再写头」（见 /log、/self-check、/requirement-template）
+   *   ② 下面那个外层兜底 —— 保证再也不会因为一个请求把宿主带走
+   */
+  const handle = (req, res) => {
     const remote = req.socket.remoteAddress ?? '';
     const origin = String(req.headers.origin ?? '');
     const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
@@ -249,14 +261,19 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
     // 所以"插件到底做了什么"在界面上完全看不见。这条路由把日志文件的
     // 最后若干行交给客户端 tab 显示 —— 没有它，排查就只能靠猜。
     if (url.pathname === '/dev-tools/log') {
+      // ⚠ **先算完 body，再写头**（理由见文件里 handle 上面的长注释）：
+      //   原来是"先 writeHead 再求值"，求值一抛就进 catch 又写一次头 → 宿主进程退出。
+      let body;
       try {
         const n = Number(url.searchParams.get('lines') ?? 400);
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: true, ...(logTail?.(n) ?? { ok: false, error: '宿主没提供日志通道' }) }));
+        body = JSON.stringify({ ok: true, ...(logTail?.(n) ?? { ok: false, error: '宿主没提供日志通道' }) });
       } catch (error) {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: false, error: String(error?.message ?? error) }));
+        const reason = String(error?.message ?? error);
+        logLine(`日志接口失败（已返回 JSON 错误，不影响宿主）：${reason}`);
+        body = JSON.stringify({ ok: false, error: reason });
       }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(body);
       return;
     }
 
@@ -266,13 +283,22 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
     // link 还是复制安装、HMR 到底监不监听源码、每个关键文件的哈希有没有变，
     // 以及进程里已注册的服务清单。判"变没变"用**哈希不用 mtime**。
     if (url.pathname === '/dev-tools/self-check') {
+      // ⚠ **先算完 body，再写头** —— 这条就是 2026-10-12 那次 fatal 的现场：
+      //   原来 writeHead(200) 在 selfCheck() **之前**，selfCheck() 一抛异常，
+      //   catch 又写一次头 → ERR_HTTP_HEADERS_SENT → 宿主进程退出。
+      //   stringify 也放进 try：返回值里若有循环引用，它同样会抛。
+      let body;
       try {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: true, ...(selfCheck?.() ?? {}) }));
+        body = JSON.stringify({ ok: true, ...(selfCheck?.() ?? {}) });
       } catch (error) {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: false, error: String(error?.message ?? error) }));
+        const reason = String(error?.message ?? error);
+        // ⚠ 原始异常**必须记下来**：上次它被 catch 吞掉，现场只剩第二次的
+        //   ERR_HTTP_HEADERS_SENT，根本看不出真因。
+        logLine(`self-check 失败（已返回 JSON 错误，不影响宿主）：${reason}`);
+        body = JSON.stringify({ ok: false, error: reason });
       }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(body);
       return;
     }
 
@@ -295,16 +321,20 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
     // ⚠ 每次请求**现读**，不做缓存 —— 这样用户改模板文件之后
     // **不用重启客户端**，下一次按键就拿到新内容。这是选这个方案的全部理由。
     if (url.pathname === '/dev-tools/requirement-template') {
+      // ⚠ 同 /log、/self-check：先算完 body 再写头（否则异常会变成致命错误）
+      let body;
+      let status = 200;
       try {
         const text = readFileSync(new URL('./templates/requirement-template.md', import.meta.url), 'utf8');
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: true, text }));
+        body = JSON.stringify({ ok: true, text });
       } catch (error) {
         const reason = String(error?.message ?? error);
         logLine(`读需求模板失败：${reason}`);
-        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: false, error: reason }));
+        status = 500;
+        body = JSON.stringify({ ok: false, error: reason });
       }
+      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(body);
       return;
     }
 
@@ -430,6 +460,23 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
 
     res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ ok: false, error: `未知动作 ${action}` }));
+  };
+
+  const server = createServer((req, res) => {
+    try {
+      handle(req, res);
+    } catch (error) {
+      const reason = String(error?.message ?? error);
+      logLine(`控制接口处理请求时抛异常（已兜住，宿主不受影响）：${reason}`);
+      try {
+        // 头已经发出去了就只能收尾 —— 再写一次头就是 ERR_HTTP_HEADERS_SENT
+        if (res.headersSent) res.end();
+        else {
+          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: reason }));
+        }
+      } catch { /* 连收尾都失败就没别的办法了 */ }
+    }
   });
 
   /**
