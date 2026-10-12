@@ -171,9 +171,10 @@ function logLine(message) {
  * @param {() => object} [options.diagnose] 诊断回调（在 index.js 里注入，避免循环依赖）
  * @param {() => boolean} [options.getDevMode] 读开发模式（内存态）
  * @param {(enabled: boolean, stamp?: number) => boolean} [options.setDevMode] 写开发模式
+ * @param {(opts: object) => object} [options.sessionDigest] 会话摘要（这次会话出了什么问题 + 最近改了什么）
  * @returns {{ dispose: () => void, port: number }}
  */
-export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck, logTail }) {
+export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck, logTail, sessionDigest }) {
   /**
    * ⚠ 一个请求里的任何异常都**不许逃出去**（2026-10-12 实测的代价）。
    *
@@ -295,6 +296,35 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
         // ⚠ 原始异常**必须记下来**：上次它被 catch 吞掉，现场只剩第二次的
         //   ERR_HTTP_HEADERS_SENT，根本看不出真因。
         logLine(`self-check 失败（已返回 JSON 错误，不影响宿主）：${reason}`);
+        body = JSON.stringify({ ok: false, error: reason });
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(body);
+      return;
+    }
+
+    // ── /dev-tools/session-digest：这次会话"出了什么问题"（只读）──
+    //
+    // 为什么需要它：面板原来显示的是**宿主日志**（插件自己说的话），
+    // 而用户真正想问的是"这次会话里出了什么错、哪些操作失败了" ——
+    // 那份数据在**会话日志**里，不在宿主日志里。
+    //
+    // ⚠ 会话日志是多帧 zstd、判据全在**载荷字段**里（详见 session-digest.js 的文件头）。
+    // ⚠ 同样守"先把 body 算完、再写头"的纪律（见 handle 上面的长注释）。
+    if (url.pathname === '/dev-tools/session-digest') {
+      let body;
+      try {
+        if (typeof sessionDigest !== 'function') {
+          body = JSON.stringify({ ok: false, error: '宿主没提供会话摘要通道' });
+        } else {
+          body = JSON.stringify(sessionDigest({
+            sessionId: url.searchParams.get('session') ?? '',
+            limit: Number(url.searchParams.get('limit') ?? 10),
+          }));
+        }
+      } catch (error) {
+        const reason = String(error?.message ?? error);
+        logLine(`会话摘要失败（已返回 JSON 错误，不影响宿主）：${reason}`);
         body = JSON.stringify({ ok: false, error: reason });
       }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });

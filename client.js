@@ -257,6 +257,32 @@ window.__ModuleLoader__.load({
 }
 .dvt-diag-cardhead{margin:0 0 10px;font-size:12px;font-weight:600;letter-spacing:.06em;
   text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}
+/* ② 这次会话出了什么问题：每行 = 类型徽标 + 标题/正文 + 时间 */
+.dvt-diag-items{display:flex;flex-direction:column}
+.dvt-diag-item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px 10px;
+  align-items:start;padding:9px 0}
+.dvt-diag-item + .dvt-diag-item{border-top:.5px solid var(--dsw-alias-border-l2)}
+.dvt-diag-problem{min-width:0}
+.dvt-diag-problem-title{margin:0;font-size:13px;line-height:20px;font-weight:500}
+.dvt-diag-problem-text{margin:3px 0 0;font-size:11.5px;line-height:17px;
+  color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word;
+  font-family:var(--dsw-font-mono,ui-monospace,Consolas,monospace)}
+/* ③ 最近改了什么：hash + commit message（=为什么）+ 时间 */
+.dvt-diag-commit{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 10px;
+  align-items:baseline;padding:6px 0}
+.dvt-diag-commit + .dvt-diag-commit{border-top:.5px solid var(--dsw-alias-border-l2)}
+.dvt-diag-hash{font-family:var(--dsw-font-mono,ui-monospace,Consolas,monospace);
+  font-size:11.5px;color:var(--dsw-alias-label-tertiary)}
+.dvt-diag-subject{min-width:0;font-size:12.5px;line-height:19px;color:var(--dsw-alias-label-primary)}
+.dvt-diag-when{font-size:11.5px;color:var(--dsw-alias-label-caption);white-space:nowrap}
+/* ④ 技术细节：用原生 details 折叠（不占状态、键盘可开） */
+.dvt-diag-sec{border:0}
+.dvt-diag-sec > summary{cursor:pointer;list-style:none;padding:10px 0;font-size:13px;
+  font-weight:500;color:var(--dsw-alias-label-secondary)}
+.dvt-diag-sec > summary::-webkit-details-marker{display:none}
+.dvt-diag-sec > summary:hover{color:var(--dsw-alias-label-primary)}
+.dvt-diag-sec > summary:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+.dvt-diag-sec[open] > summary{margin-bottom:12px}
 .dvt-diag-more{margin-top:9px;padding:0;border:0;background:transparent;cursor:pointer;
   font:inherit;font-size:11.5px;color:var(--dsw-alias-state-business-primary)}
 .dvt-diag-more:hover{text-decoration:underline}
@@ -484,19 +510,26 @@ window.__ModuleLoader__.load({
      * 数据**全部来自宿主半的 HTTP 接口** —— 客户端跑在浏览器环境里，
      * 只有 fetch、没有 fs，读不到插件目录与控制不了进程。
      *
-     * 分区（按"看一眼就知道要不要重启"的顺序排）：
-     *   ① 结论条    —— 一句话：现在跑的是不是磁盘上那份
-     *   ② 环境      —— 进程启动时刻 / 安装方式 / HMR 监听范围
-     *   ③ 文件      —— 逐个文件的哈希比对（代码变了要重启；数据变了立刻生效）
-     *   ④ 服务      —— 进程里已注册的服务（带边界说明）
-     *   ⑤ 经验库    —— 版本 / 条数 / 索引装配
+     * 分区（2026-10-12 按用户反馈重排：**用户视角在前，我的排查细节在后**）：
+     *   ① 需要你做什么 —— 只有"要重启"这类要用户动手的事
+     *   ② 这次会话出了什么问题 —— 整轮中断 / 工具失败 / 审批被拒（来自会话日志）
+     *   ③ 最近改了什么、为什么 —— git 提交（为什么）+ 未提交改动（原因未记录）
+     *   ④ 技术细节（默认折叠）—— 环境 / 文件哈希 / 服务 / 经验库 / 宿主日志
+     *
+     * ⚠ ④ 为什么保留：那些是我排查"改了没生效"的命根子（2026-10-12 正是靠它
+     *   抓出"部分生效"和假 token）。**只折叠，不删除。**
      */
-    function DiagnosticsTab() {
+    function DiagnosticsTab(props) {
       // ⚠ 必须自己调一次 ensureStyle：本 tab 是**注册即出现**的（不像小工具那样
       //   依赖开发模式开关），而 .dvt-diag-* 全在 BASE_CSS 里 ——
       //   不调的话，开发模式关着时这一页会是没有样式的裸文本，比改之前更糟。
       //   ensureStyle 是幂等的（按 id 判重），放在组件体里和 FooterAppControls 一致。
       ensureStyle();
+      // 会话 id 由 `conversation.view` 座位透传进来 —— ② 要靠它去宿主半查会话日志。
+      // 空 props（校验器就是这样渲染的）也不能崩。
+      const sessionId = (props === null || props === undefined) ? '' : String(props.sessionId ?? '');
+      const [digest, setDigest] = React.useState(null);
+      const [showAllProblems, setShowAllProblems] = React.useState(false);
       const [self, setSelf] = React.useState(null);
       // 服务名会铺满好几行（实测 94 个）—— 默认只显示一屏、可展开。
       // 目的和自适应版式一致：**一页看完**，而不是让 chip 把日志挤到屏幕外。
@@ -519,13 +552,21 @@ window.__ModuleLoader__.load({
             const r3 = await fetch(`${CONTROL_BASE}/log?lines=200`);
             setLog(await r3.json());
           } catch { setLog({ ok: false, error: '日志接口读不到' }); }
+          // 会话摘要（② 这次会话出了什么问题 + ③ 最近改了什么）也单独 try：
+          // 它要读会话日志、还要跑 git，失败面比别的接口大，**不该拖垮整页**。
+          try {
+            const r4 = await fetch(
+              `${CONTROL_BASE}/session-digest?session=${encodeURIComponent(sessionId)}&limit=200`,
+              { cache: 'no-store' });
+            setDigest(await r4.json());
+          } catch { setDigest({ ok: false, error: '会话摘要接口读不到' }); }
           setErr(null);
         } catch (e) {
           setErr(String(e?.message ?? e));
         }
         setAt(new Date());
         setBusy(false);
-      }, []);
+      }, [sessionId]);
       React.useEffect(() => { load(); }, [load]);
 
       // 行 / 卡片 / 头部 —— 抽出来给"读到了"和"读不到"两个分支共用。
@@ -575,17 +616,99 @@ window.__ModuleLoader__.load({
       const tone = needRestart.length > 0 ? 'error' : (changed.length > 0 ? 'warn' : 'ok');
       const toneWord = tone === 'error' ? '需重启' : (tone === 'warn' ? '已生效' : '一致');
 
+      // ── 会话摘要（②③ 两节的数据）──────────────────────────────────
+      // 只在宿主真的回了 ok 时才用；拿不到就什么都不显示 —— 不要拿半截数据糊界面。
+      const problems = (digest !== null && digest.ok === true && Array.isArray(digest.items))
+        ? digest.items : [];
+      const repos = (digest !== null && digest.ok === true && Array.isArray(digest.repos))
+        ? digest.repos.filter((r) => (r.commits ?? []).length > 0 || (r.dirty ?? []).length > 0)
+        : [];
+      const problemTone = (k) => (k === 'turn-error' ? 'error' : (k === 'tool-failure' ? 'warn' : undefined));
+      const problemLabel = (k) => (k === 'turn-error' ? '整轮中断' : (k === 'tool-failure' ? '工具失败' : '审批被拒'));
+      const shownProblems = showAllProblems ? problems : problems.slice(0, 10);
+
       return h('div', { className: 'dvt-diag' }, head(),
         h('div', { className: 'dvt-diag-body' },
 
-          // ① 结论 —— 占满整行（它是"一眼看结论"的那一条）
-          h('div', { key: 'verdict', className: 'dvt-diag-span' }, card('verdict', tone, [
-            h('div', { key: 'badges', className: 'dvt-diag-verdict' },
-              h('span', { key: 'tone', className: 'dvt-diag-badge', 'data-tone': tone }, toneWord),
-              h('span', { key: 'count', className: 'dvt-diag-time' },
-                `${changed.length} / ${files.length} 个文件与加载时不同`)),
-            h('p', { key: 'sum', className: 'dvt-diag-summary' }, self.summary ?? '（宿主没给结论）'),
-          ])),
+          // ① 需要你做什么 —— 只有"要你动手"时才是一条警告，没事就一句话
+          h('div', { key: 'todo', className: 'dvt-diag-span' },
+            card('todo', needRestart.length > 0 ? 'warn' : undefined, [
+              h('div', { key: 'badges', className: 'dvt-diag-verdict' },
+                h('span', { key: 'tone', className: 'dvt-diag-badge', 'data-tone': tone }, toneWord),
+                h('span', { key: 'count', className: 'dvt-diag-time' },
+                  `${changed.length} / ${files.length} 个文件与加载时不同`)),
+              h('p', { key: 'sum', className: 'dvt-diag-summary' },
+                needRestart.length > 0
+                  ? `有 ${needRestart.length} 个代码文件在加载后被改过 —— **重启客户端**才会生效。`
+                  : (changed.length > 0
+                    ? '改的是运行期读盘的数据（如经验库），已经立即生效、不用重启。'
+                    : '正在跑的这一份和磁盘上一致，**没有需要你做的事**。')),
+            ])),
+
+          // ② 这次会话出了什么问题（用户视角的第一诉求）
+          h('div', { key: 'problems', className: 'dvt-diag-span' },
+            card('problems', problems.length > 0 ? 'error' : undefined, [
+              h('h3', { key: 'h', className: 'dvt-diag-cardhead' },
+                `这次会话出了什么问题${problems.length > 0 ? `（${problems.length}）` : ''}`),
+              problems.length === 0
+                ? h('p', { key: 'none', className: 'dvt-diag-note' },
+                  (digest !== null && digest.ok === true)
+                    ? '没有报错、没有工具调用失败。'
+                    : '读不到会话摘要（宿主半还没有这条接口时就会这样 —— 重启客户端即可）。')
+                : h('div', { key: 'list', className: 'dvt-diag-items' },
+                  shownProblems.map((it, i) => h('div', {
+                    key: `${it.kind}-${i}`, className: 'dvt-diag-item',
+                  },
+                    h('span', { className: 'dvt-diag-badge', 'data-tone': problemTone(it.kind) },
+                      problemLabel(it.kind)),
+                    h('div', { className: 'dvt-diag-problem' },
+                      h('p', { className: 'dvt-diag-problem-title' }, it.title ?? it.kind),
+                      h('p', { className: 'dvt-diag-problem-text' }, it.text ?? '')),
+                    h('span', { className: 'dvt-diag-when' },
+                      it.at === null || it.at === undefined ? '' : new Date(it.at).toLocaleTimeString())))),
+              problems.length > 10
+                ? h('button', {
+                  key: 'more', className: 'dvt-diag-more', type: 'button',
+                  onClick: () => setShowAllProblems((v) => !v),
+                }, showAllProblems ? '只看前 10 条' : `展开全部 ${problems.length} 条`)
+                : null,
+              (digest !== null && digest.sessionMatch === 'newest')
+                ? h('p', { key: 'match', className: 'dvt-diag-note' },
+                  '⚠ 没匹配到这次会话的日志，上面列的是**最近一次**会话 —— 别当成这次的问题。')
+                : null,
+            ])),
+
+          // ③ 最近改了什么、为什么（为什么只能来自 commit message，见 session-digest.js）
+          h('div', { key: 'changes', className: 'dvt-diag-span' },
+            card('changes', undefined, [
+              h('h3', { key: 'h', className: 'dvt-diag-cardhead' }, '最近改了什么、为什么'),
+              ...(repos.length === 0
+                ? [h('p', { key: 'none', className: 'dvt-diag-note' }, '读不到仓库信息。')]
+                : repos.flatMap((repo, ri) => [
+                  h('p', { key: `repo-${ri}`, className: 'dvt-diag-note' },
+                    `${repo.dir}${repo.kind === 'git' ? '' : ' —— 这个目录不是 git 仓库'}`),
+                  ...(repo.commits ?? []).map((c, ci) => h('div', {
+                    key: `c-${ri}-${ci}`, className: 'dvt-diag-commit',
+                  },
+                    h('code', { className: 'dvt-diag-hash' }, String(c.hash ?? '').slice(0, 7)),
+                    h('span', { className: 'dvt-diag-subject' }, c.subject ?? '（没有提交信息）'),
+                    h('span', { className: 'dvt-diag-when' },
+                      typeof c.date === 'string' ? new Date(c.date).toLocaleString() : ''))),
+                  (repo.dirty ?? []).length === 0
+                    ? null
+                    : h('p', { key: `dirty-${ri}`, className: 'dvt-diag-note' },
+                      `未提交：${repo.dirty.map((d) => d.file).join('、')} —— 这些**没有记录原因**`),
+                  repo.note === null || repo.note === undefined
+                    ? null
+                    : h('p', { key: `note-${ri}`, className: 'dvt-diag-note' }, repo.note),
+                ])),
+            ])),
+
+          // ── ④ 技术细节：默认折叠（给我排查用，不是用户的第一诉求）──
+          h('details', { key: 'tech', className: 'dvt-diag-sec dvt-diag-span' }, [
+            h('summary', { key: 's' },
+              `技术细节：文件哈希比对 / 进程里 ${svc.count ?? 0} 个服务 / 宿主日志`),
+            h('div', { key: 'techbody', className: 'dvt-diag-body' },
 
           // 左栏（窄，宽屏才分栏）：一眼要看的「环境」与「经验库」
           h('div', { key: 'col-a', className: 'dvt-diag-col' },
@@ -679,7 +802,7 @@ window.__ModuleLoader__.load({
                     h('pre', { key: 'pre', className: 'dvt-diag-log' },
                       (log.lines ?? []).join('\n') || '（空）'),
                   ])),
-            ]))));
+            ])))])));
     }
 
     function ensureStyle() {

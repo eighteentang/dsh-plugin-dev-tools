@@ -45,8 +45,13 @@ import { installExperienceTool, probeExperienceTool } from './experience-tool.js
 import { firstNonEmpty } from './experience.js';
 import { collectSelfCheck, appendSelfCheckLog } from './self-check.js';
 import { openLogChannel } from './log-channel.js';
+import { sessionDigest } from './session-digest.js';
 import { homedir } from 'node:os';
-import { join as joinPath } from 'node:path';
+import { join as joinPath, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/** 插件自己的目录 —— 「最近改了什么」默认看这个仓库（用户最关心"刚改了 dev-tools 什么"） */
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url));
 
 /** 手写 Standard Schema（见文件头关于 schemastery 的说明） */
 const ConfigSchema = {
@@ -234,6 +239,10 @@ export function apply(ctx, config) {
       selfCheck: () => collectSelfCheck(ctx),
       // 日志通道：客户端 tab 靠它读回最近若干行（浏览器侧没有 fs）
       logTail: (n) => log.tail(n),
+      // 这次会话"出了什么问题" + "最近改了什么、为什么"（2026-10-12 加）：
+      // 会话日志在 ~/.dsh/sessions 下，判据见 session-digest.js 的文件头。
+      // 仓库给插件自己这一份；会话自己的工作区由模块从事件里读出来再补上。
+      sessionDigest: (o) => sessionDigest({ ...o, dirs: [PLUGIN_DIR] }),
       diagnose: () => ({
         devMode: isDevModeOn(),
         devModeStamp: getDevModeStamp(),

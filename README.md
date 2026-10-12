@@ -1,6 +1,6 @@
 # DSH 开发工具箱
 
-**当前版本 1.4.0**　·　变更记录见 [CHANGELOG.md](./CHANGELOG.md)（在这里写版本号，是因为
+**当前版本 1.5.0**　·　变更记录见 [CHANGELOG.md](./CHANGELOG.md)（在这里写版本号，是因为
 `package.json` 里那个数字用户看不到，而"我装的这版新不新"是他们会问的第一个问题）。
 
 给 [DSH（DeepSeek Harness）](https://deepseek-harness.github.io/deepseek-harness/) 插件开发者的一小组工具，外加一份**随插件分发的开发经验库**。
