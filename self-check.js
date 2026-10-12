@@ -37,7 +37,7 @@ export const LOADED_URL = import.meta.url;
 /** 要盯的代码文件（改这些必须重启） */
 const CODE_FILES = [
   'index.js', 'client.js', 'experience.js', 'experience-tool.js',
-  'dev-rule.js', 'app-control.js', 'workflow.js', 'self-check.js',
+  'dev-rule.js', 'app-control.js', 'workflow.js', 'self-check.js', 'log-channel.js',
 ];
 
 /** 要盯的数据文件（改这些立刻生效，不需要重启） */

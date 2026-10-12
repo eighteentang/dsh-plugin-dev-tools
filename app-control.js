@@ -173,7 +173,7 @@ function logLine(message) {
  * @param {(enabled: boolean, stamp?: number) => boolean} [options.setDevMode] 写开发模式
  * @returns {{ dispose: () => void, port: number }}
  */
-export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck }) {
+export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck, logTail }) {
   const server = createServer((req, res) => {
     const remote = req.socket.remoteAddress ?? '';
     const origin = String(req.headers.origin ?? '');
@@ -240,6 +240,23 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
       }
       res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('method not allowed');
+      return;
+    }
+
+    // ── /dev-tools/log：宿主日志的尾巴（只读）──
+    //
+    // 为什么需要这个路由：**宿主插件的 console.log 桌面端不落盘**，
+    // 所以"插件到底做了什么"在界面上完全看不见。这条路由把日志文件的
+    // 最后若干行交给客户端 tab 显示 —— 没有它，排查就只能靠猜。
+    if (url.pathname === '/dev-tools/log') {
+      try {
+        const n = Number(url.searchParams.get('lines') ?? 400);
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, ...(logTail?.(n) ?? { ok: false, error: '宿主没提供日志通道' }) }));
+      } catch (error) {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String(error?.message ?? error) }));
+      }
       return;
     }
 

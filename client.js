@@ -404,6 +404,7 @@ window.__ModuleLoader__.load({
     function DiagnosticsTab() {
       const [self, setSelf] = React.useState(null);
       const [exp, setExp] = React.useState(null);
+      const [log, setLog] = React.useState(null);
       const [err, setErr] = React.useState(null);
       const [at, setAt] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
@@ -415,6 +416,11 @@ window.__ModuleLoader__.load({
           setSelf(await r1.json());
           const r2 = await fetch(`${CONTROL_BASE}/experience`);
           setExp(await r2.json());
+          // 日志单独 try —— 它读不到不该连带把上面两区也拖成失败
+          try {
+            const r3 = await fetch(`${CONTROL_BASE}/log?lines=200`);
+            setLog(await r3.json());
+          } catch { setLog({ ok: false, error: '日志接口读不到' }); }
           setErr(null);
         } catch (e) {
           setErr(String(e?.message ?? e));
@@ -538,7 +544,29 @@ window.__ModuleLoader__.load({
               row('指纹', String(exp.declaredFingerprint ?? '?')),
               row('头部一致', exp.headerStale === true
                 ? h('span', { style: { color: '#ffc800' } }, '不一致（头部与实际对不上）')
-                : '一致'))));
+                : '一致'))),
+
+        // ⑥ 日志
+        //
+        // 为什么这一区不能省：**宿主插件的 console.log 桌面端不落盘**，
+        // 所以"插件到底做了什么"本来是完全看不见的 —— 故障表现是
+        // "不崩溃但什么都不做"，只能靠猜。这里是唯一的观察窗口。
+        h('div', { style: box },
+          h('div', { style: h4 }, '宿主日志'),
+          log === null
+            ? h('div', { style: dim }, '读不到')
+            : log.ok !== true
+              ? h('div', { style: dim }, log.error ?? '读不到')
+              : h('div', null,
+                h('div', { style: { ...dim, fontSize: 11, marginBottom: 6 } },
+                  `${log.note ?? ''}${log.truncated === true ? '（更早的没显示）' : ''}`),
+                h('pre', {
+                  style: {
+                    margin: 0, fontSize: 11, lineHeight: 1.5, maxHeight: 260, overflow: 'auto',
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                    background: 'rgba(255,255,255,.04)', padding: '6px 8px', borderRadius: 4,
+                  },
+                }, (log.lines ?? []).join('\n') || '（空）'))));
     }
 
     function ensureStyle() {

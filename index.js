@@ -40,6 +40,7 @@ import { startAppControl } from './app-control.js';
 import { installDevRuleSection, isDevModeOn, setDevMode, onDevModeChange, getDevModeStamp } from './dev-rule.js';
 import { installExperienceTool, probeExperienceTool } from './experience-tool.js';
 import { collectSelfCheck, appendSelfCheckLog } from './self-check.js';
+import { openLogChannel } from './log-channel.js';
 import { homedir } from 'node:os';
 import { join as joinPath } from 'node:path';
 
@@ -125,6 +126,8 @@ export function apply(ctx, config) {
       // 它回答的是"磁盘上的代码，和正在跑的这一份，是不是同一份" —— 用哈希判，不用 mtime
       // （touch 会刷新 mtime 而内容没变 → 用 mtime 会假报"未生效"）。
       selfCheck: () => collectSelfCheck(ctx),
+      // 日志通道：客户端 tab 靠它读回最近若干行（浏览器侧没有 fs）
+      logTail: (n) => log.tail(n),
       diagnose: () => ({
         devMode: isDevModeOn(),
         devModeStamp: getDevModeStamp(),
@@ -143,12 +146,23 @@ export function apply(ctx, config) {
   }
 
   // 开发规矩注入 —— 见 dev-rule.js 的详细说明。
+  // ── 日志通道（④）────────────────────────────────────────────────────
+  //
+  // 为什么必须有：**宿主插件的 console.log 桌面端不落盘**（写进宿主 stdout，
+  // 桌面应用不重定向）。于是"不崩溃但什么都不做"这类故障完全看不见。
+  //
+  // ⚠ 在 apply 的最开始就开 —— 后面每一步都可能有值得留的话要说。
+  const log = openLogChannel(joinPath(homedir(), '.dsh', 'dev-tools.log'));
+  log.log('info', `── apply 开始 ── devMode=${String(config.devMode)}`);
+  log.log('info', `经验库：${firstNonEmpty([config.experienceFile]) || '(用插件自带那份)'}`);
+
   // 核心：`text` 是函数，**每次装配提示词时重新求值**；开关关掉时返回空串。
   // 这是"把查文档这个动作固定下来"的机制，不依赖我记性。
   //
   // 第二个参数是经验库路径：留空用插件自带的那一份（随插件分发），
   // 也可以在 Config 里指向用户自己的文件。
   const disposeRule = installDevRuleSection(ctx, config.experienceFile);
+  log.log('info', '自检清单段落：已装配（开关关掉时它自己返回空串）');
 
   // 记一笔"这一份模块是什么时候加载的" —— 这是「双时间戳 + 双哈希」里的加载时刻与加载时哈希。
   //
