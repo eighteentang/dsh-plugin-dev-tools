@@ -220,48 +220,137 @@ window.__ModuleLoader__.load({
 /* 浮框底部的操作提示（"松开 Alt 可固定" / "点浮框外面可收起"） */
 .dvt-overlay .dvt-tip{font-size:11px;color:#77808f;margin-bottom:5px;
   font-family:inherit}
+/* ── 开发诊断（会话区 tab 上的那一页）──────────────────────────────────
+   为什么单独立一段：它挂在**会话区**（宽容器）里，和设置页的窄栏不是一套排版。
+   视觉规则与设置页同源（同一批 token），只是版式按"一页报告"来：
+     · 头部 18/600 标题 + 副标题 + 刷新按钮（H32 / radius-md）
+     · 结论卡带**语义色徽标**（state-error / warn / success —— 不自编颜色）
+     · 环境/文件/服务/经验库/日志 = 卡片 + 分组标题 + 行模式
+     · 宽屏自适应：**两栏**（左窄右宽），窄屏回落单列 —— 见下面的 .dvt-diag-body
+   ⚠ 本段同样在模板字符串里：注释里不能用反引号。 */
+.dvt-diag{width:100%;max-width:1200px;margin:0 auto;box-sizing:border-box;padding:22px 28px 40px;
+  overflow-y:auto;color:var(--dsw-alias-label-primary);
+  font-size:var(--dsh-content-font-size-secondary,13px);
+  line-height:calc(20px + var(--dsh-content-font-delta-secondary,0px));
+  --dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2)}
+.dvt-diag-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
+.dvt-diag-title{margin:0;font-size:18px;font-weight:600;line-height:26px}
+.dvt-diag-sub{margin:4px 0 0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
+.dvt-diag-actions{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+.dvt-diag-time{font-size:12px;color:var(--dsw-alias-label-caption);white-space:nowrap}
+.dvt-diag-btn{display:inline-flex;align-items:center;height:32px;padding:0 14px;border:0;
+  border-radius:var(--dsw-radius-md);cursor:pointer;font:inherit;font-size:13px;
+  background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);
+  transition:background .16s}
+.dvt-diag-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.dvt-diag-btn:disabled{opacity:.5;cursor:default}
+.dvt-diag-btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+/* 自适应版式（2026-10-12 按用户反馈加）：窄屏一列、**宽屏两栏（左窄右宽）**。
+   动机：原来固定单列 720px，宽屏上两边全是空的、信息被拉成一长条。
+   断点 980px —— 低于它左栏会窄到读不出（行里是"宿主启动 2026-10-12 20:16:35"）。 */
+.dvt-diag-body{display:grid;gap:14px;grid-template-columns:minmax(0,1fr);align-items:start}
+.dvt-diag-col{display:grid;gap:14px;align-content:start;min-width:0}
+.dvt-diag-span{grid-column:1/-1;min-width:0}
+@media (min-width:980px){
+  .dvt-diag-body{grid-template-columns:minmax(240px,320px) minmax(0,1fr)}
+}
+.dvt-diag-cardhead{margin:0 0 10px;font-size:12px;font-weight:600;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}
+.dvt-diag-more{margin-top:9px;padding:0;border:0;background:transparent;cursor:pointer;
+  font:inherit;font-size:11.5px;color:var(--dsw-alias-state-business-primary)}
+.dvt-diag-more:hover{text-decoration:underline}
+.dvt-diag-more:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+.dvt-diag-card{border:.5px solid var(--dsw-alias-settings-card-stroke);
+  border-radius:var(--dsw-radius-xl);background:var(--dsw-alias-settings-card-fill);
+  padding:14px 16px}
+.dvt-diag-card[data-tone=error]{border-color:var(--dsw-alias-state-error-primary)}
+.dvt-diag-card[data-tone=warn]{border-color:var(--dsw-alias-state-warn-primary)}
+.dvt-diag-verdict{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:9px}
+.dvt-diag-badge{corner-shape:round;display:inline-flex;align-items:center;height:22px;padding:0 10px;
+  border-radius:999px;border:.5px solid var(--dsw-alias-border-l2);
+  font-size:12px;font-weight:500;line-height:1;color:var(--dsw-alias-label-secondary)}
+.dvt-diag-badge[data-tone=error]{color:var(--dsw-alias-state-error-primary);border-color:currentColor}
+.dvt-diag-badge[data-tone=warn]{color:var(--dsw-alias-state-warn-primary);border-color:currentColor}
+.dvt-diag-badge[data-tone=ok]{color:var(--dsw-alias-state-success-primary);border-color:currentColor}
+.dvt-diag-summary{margin:0;font-size:14px;line-height:22px}
+.dvt-diag-rows{display:grid;grid-template-columns:104px minmax(0,1fr);gap:7px 14px}
+.dvt-diag-k{color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.dvt-diag-v{color:var(--dsw-alias-label-primary);word-break:break-word;min-width:0}
+.dvt-diag-files{display:block}
+.dvt-diag-filerow{display:flex;align-items:center;gap:10px;padding:7px 0}
+.dvt-diag-filerow + .dvt-diag-filerow{border-top:.5px solid var(--dsw-alias-border-l2)}
+.dvt-diag-glyph{flex:0 0 auto;width:14px;text-align:center;font-size:12px;
+  color:var(--dsw-alias-label-caption)}
+.dvt-diag-file{flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--dsw-alias-label-primary);
+  font-family:var(--dsw-font-mono,ui-monospace,Consolas,monospace);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dvt-diag-tag{flex:0 0 auto;font-size:11.5px;color:var(--dsw-alias-label-caption)}
+.dvt-diag-chips{display:flex;flex-wrap:wrap;gap:6px}
+.dvt-diag-chip{font-family:var(--dsw-font-mono,ui-monospace,Consolas,monospace);font-size:11.5px;
+  padding:2px 8px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);
+  color:var(--dsw-alias-label-secondary)}
+.dvt-diag-note{margin:9px 0 0;font-size:11.5px;line-height:18px;color:var(--dsw-alias-label-caption)}
+.dvt-diag-log{margin:0;padding:10px 12px;border-radius:var(--dsw-radius-lg);
+  background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);
+  font-family:var(--dsw-font-mono,ui-monospace,Consolas,monospace);
+  font-size:11.5px;line-height:1.55;white-space:pre-wrap;word-break:break-all;
+  max-height:280px;overflow:auto;--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2)}
+.dvt-diag-ok{color:var(--dsw-alias-state-success-primary)}
+.dvt-diag-warn{color:var(--dsw-alias-state-warn-primary)}
+.dvt-diag-err{color:var(--dsw-alias-state-error-primary)}
+@media (prefers-reduced-motion:reduce){.dvt-diag-btn{transition:none}}
 .dvt-panel{display:flex;flex-direction:column;gap:14px;padding:4px 0;font-size:13px}
 .dvt-master{display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:11px 13px;border-radius:10px;
-  border:1px solid var(--dsw-alias-border-primary,#2b3040);background:rgba(127,127,127,.05)}
+  padding:14px 16px;border-radius:var(--dsw-radius-xl);
+  border:.5px solid var(--dsw-alias-settings-card-stroke);
+  background:var(--dsw-alias-settings-card-fill)}
 .dvt-master-title{font-weight:600;color:var(--dsw-alias-label-primary,#e6e8ee)}
 .dvt-master-sub{font-size:12px;color:var(--dsw-alias-label-secondary,#8b93a7);margin-top:3px}
-.dvt-tool{display:flex;flex-direction:column;gap:6px;padding:12px 13px;border-radius:10px;
-  border:1px solid var(--dsw-alias-border-primary,#2b3040);transition:opacity .15s}
+.dvt-tool{display:flex;flex-direction:column;gap:7px;padding:14px 16px;border-radius:var(--dsw-radius-xl);
+  border:.5px solid var(--dsw-alias-settings-card-stroke);
+  background:var(--dsw-alias-settings-card-fill);transition:opacity .15s}
 .dvt-tool-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .dvt-tool-name{font-weight:600;color:var(--dsw-alias-label-primary,#e6e8ee)}
 .dvt-tool-summary{font-size:12.5px;line-height:1.65;color:var(--dsw-alias-label-primary,#e6e8ee);opacity:.9}
 .dvt-tool-usage{font-size:12px;line-height:1.65;color:var(--dsw-alias-label-secondary,#8b93a7);
-  padding-top:6px;border-top:1px dashed var(--dsw-alias-border-primary,#2b3040)}
+  padding-top:8px;border-top:.5px dashed var(--dsw-alias-border-l2)}
 .dvt-tool-off{opacity:.5}
-.dvt-switch{position:relative;flex:0 0 auto;width:36px;height:20px;border-radius:10px;cursor:pointer;
-  border:1px solid var(--dsw-alias-border-primary,#2b3040);background:transparent;
-  padding:0;transition:background .15s}
-.dvt-switch[data-on="true"]{background:#4ec97e;border-color:#4ec97e}
+.dvt-switch{position:relative;flex:0 0 auto;width:36px;height:20px;corner-shape:round;
+  border-radius:999px;cursor:pointer;
+  border:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-module-platform);
+  padding:0;transition:background .15s,border-color .15s}
+.dvt-switch[data-on="true"]{background:var(--dsw-alias-state-success-primary);
+  border-color:var(--dsw-alias-state-success-primary)}
 .dvt-switch::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;
-  border-radius:50%;background:#8b93a7;transition:transform .15s,background .15s}
-.dvt-switch[data-on="true"]::after{transform:translateX(16px);background:#0f1115}
+  corner-shape:round;border-radius:50%;
+  background:var(--dsw-alias-switch-thumb,var(--dsw-alias-bg-base));
+  transition:transform .15s,background .15s}
+.dvt-switch[data-on="true"]::after{transform:translateX(16px);
+  background:var(--dsw-alias-label-primary-inverted,var(--dsw-alias-bg-base))}
 .dvt-switch[disabled]{opacity:.4;cursor:not-allowed}
 .dvt-hint{font-size:12px;line-height:1.7;color:var(--dsw-alias-label-secondary,#8b93a7)}
 .dvt-radio{display:flex;gap:7px;align-items:center;cursor:pointer;font-size:12px;
   color:var(--dsw-alias-label-secondary,#8b93a7);padding:2px 0}
 /* 经验库信息块 */
-.dvt-exp{display:flex;flex-direction:column;gap:8px;padding:11px 13px;border-radius:10px;
-  border:1px solid var(--dsw-alias-border-primary,#2b3040);background:rgba(127,127,127,.05)}
+.dvt-exp{display:flex;flex-direction:column;gap:9px;padding:14px 16px;border-radius:var(--dsw-radius-xl);
+  border:.5px solid var(--dsw-alias-settings-card-stroke);
+  background:var(--dsw-alias-settings-card-fill)}
 .dvt-exp-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .dvt-exp-title{font-weight:600;color:var(--dsw-alias-label-primary,#e6e8ee)}
 .dvt-exp-grid{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:12px}
 .dvt-exp-key{color:var(--dsw-alias-label-secondary,#8b93a7);white-space:nowrap}
 .dvt-exp-val{color:var(--dsw-alias-label-primary,#e6e8ee)}
 .dvt-exp-val.mono{font-family:ui-monospace,Consolas,monospace;letter-spacing:.3px}
-.dvt-exp-warn{font-size:12px;line-height:1.6;color:#ffd479}
-.dvt-exp-err{font-size:12px;line-height:1.6;color:#ff9d9d}
+.dvt-exp-warn{font-size:12px;line-height:1.6;color:var(--dsw-alias-state-warn-primary)}
+.dvt-exp-err{font-size:12px;line-height:1.6;color:var(--dsw-alias-state-error-primary)}
 .dvt-refresh{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;
-  height:26px;padding:0 10px;border-radius:13px;cursor:pointer;
-  border:1px solid var(--dsw-alias-border-primary,#2b3040);background:transparent;
-  color:var(--dsw-alias-label-secondary,#8b93a7);font:inherit;font-size:12px;line-height:1;
+  height:28px;padding:0 12px;border-radius:var(--dsw-radius-sm);cursor:pointer;
+  border:.5px solid var(--dsw-alias-border-l2);background:transparent;
+  color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:1;
   transition:background .15s,color .15s}
-.dvt-refresh:hover{background:rgba(127,127,127,.16);color:var(--dsw-alias-label-primary,#e6e8ee)}
+.dvt-refresh:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dvt-refresh:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
 .dvt-refresh[disabled]{opacity:.5;cursor:not-allowed}
 /* 账号菜单那一行（settings.trigger）里的重启/关闭。
    只放图标 —— 那一行原本是「头像 + 用户名」，实测行宽 260×44，
@@ -284,20 +373,21 @@ window.__ModuleLoader__.load({
   color:inherit;font:inherit;text-align:left;cursor:pointer}
 .dvt-icon-btn{display:inline-flex;align-items:center;justify-content:center;
   width:28px;height:28px;min-width:28px;flex:0 0 auto;padding:0;margin:0;
-  border-radius:50%;cursor:pointer;
-  border:1px solid rgba(139,147,167,.35);background:rgba(139,147,167,.12);
-  color:#c8cede;
+  corner-shape:round;border-radius:50%;cursor:pointer;
+  border:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-module-platform);
+  color:var(--dsw-alias-label-secondary);
   font-family:inherit;font-size:14px;line-height:1;
   transition:background .15s,color .15s}
-.dvt-icon-btn:hover{background:rgba(139,147,167,.28);color:#ffffff}
+.dvt-icon-btn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .dvt-icon-btn[disabled]{opacity:.4;cursor:not-allowed}
 .dvt-pill{display:inline-flex;align-items:center;justify-content:center;gap:5px;
-  height:26px;padding:0 9px;border-radius:13px;cursor:pointer;
-  border:1px solid var(--dsw-alias-border-primary,#2b3040);
-  background:transparent;color:var(--dsw-alias-label-secondary,#8b93a7);
+  height:28px;padding:0 12px;border-radius:var(--dsw-radius-sm);cursor:pointer;
+  border:.5px solid var(--dsw-alias-border-l2);
+  background:transparent;color:var(--dsw-alias-label-secondary);
   font:inherit;font-size:12px;line-height:1;white-space:nowrap;
   transition:background .15s,color .15s}
-.dvt-pill:hover{background:rgba(127,127,127,.16);color:var(--dsw-alias-label-primary,#e6e8ee)}
+.dvt-pill:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dvt-pill:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
 .dvt-pill[disabled]{opacity:.4;cursor:not-allowed}
 .dvt-pill-icon{font-size:13px;line-height:1}
 .dvt-pill-text{font-size:12px}
@@ -402,7 +492,15 @@ window.__ModuleLoader__.load({
      *   ⑤ 经验库    —— 版本 / 条数 / 索引装配
      */
     function DiagnosticsTab() {
+      // ⚠ 必须自己调一次 ensureStyle：本 tab 是**注册即出现**的（不像小工具那样
+      //   依赖开发模式开关），而 .dvt-diag-* 全在 BASE_CSS 里 ——
+      //   不调的话，开发模式关着时这一页会是没有样式的裸文本，比改之前更糟。
+      //   ensureStyle 是幂等的（按 id 判重），放在组件体里和 FooterAppControls 一致。
+      ensureStyle();
       const [self, setSelf] = React.useState(null);
+      // 服务名会铺满好几行（实测 94 个）—— 默认只显示一屏、可展开。
+      // 目的和自适应版式一致：**一页看完**，而不是让 chip 把日志挤到屏幕外。
+      const [allSvc, setAllSvc] = React.useState(false);
       const [exp, setExp] = React.useState(null);
       const [log, setLog] = React.useState(null);
       const [err, setErr] = React.useState(null);
@@ -430,21 +528,38 @@ window.__ModuleLoader__.load({
       }, []);
       React.useEffect(() => { load(); }, [load]);
 
-      const box = { padding: '10px 12px', borderBottom: '1px solid var(--dvt-line, #2a2a30)' };
-      const h4 = { margin: '0 0 8px', fontSize: 13, fontWeight: 600, opacity: 0.9 };
-      const kv = { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 10px', fontSize: 12, lineHeight: 1.6 };
-      const dim = { opacity: 0.62 };
-      const row = (k, v) => [h('div', { key: k, style: dim }, k), h('div', { key: `${k}-v` }, v)];
+      // 行 / 卡片 / 头部 —— 抽出来给"读到了"和"读不到"两个分支共用。
+      // 样式全部走 BASE_CSS 里的 .dvt-diag-* 类；这里**不写颜色**，
+      // 否则又会回到"自编色 + 假 token 静默回退"那条老路（见 BASE_CSS 顶部注释）。
+      const row = (k, v) => [
+        h('div', { key: k, className: 'dvt-diag-k' }, k),
+        h('div', { key: `${k}-v`, className: 'dvt-diag-v' }, v),
+      ];
+      const card = (key, toneOfCard, children) => h('section', {
+        key,
+        className: 'dvt-diag-card',
+        ...(toneOfCard === undefined ? null : { 'data-tone': toneOfCard }),
+      }, Array.isArray(children) ? children : [children]);
+      const head = () => h('header', { className: 'dvt-diag-head' },
+        h('div', null,
+          h('h2', { className: 'dvt-diag-title' }, '开发诊断'),
+          h('p', { className: 'dvt-diag-sub' }, '正在跑的这一份，和磁盘上那一份是不是同一个')),
+        h('div', { className: 'dvt-diag-actions' },
+          at === null ? null : h('span', { className: 'dvt-diag-time' }, `读于 ${at.toLocaleTimeString()}`),
+          h('button', {
+            className: 'dvt-diag-btn', type: 'button', onClick: load, disabled: busy,
+          }, busy ? '刷新中…' : '刷新')));
 
       if (self === null) {
-        return h('div', { style: { padding: 12, fontSize: 13 } },
-          err === null
-            ? '正在读取…'
-            : h('div', null,
-              h('div', { style: { color: '#ff6b5a', marginBottom: 6 } }, '读不到宿主控制接口'),
-              h('div', { style: { ...dim, fontSize: 12 } }, err),
-              h('div', { style: { ...dim, fontSize: 12, marginTop: 8 } },
-                '控制接口（8800）可能没启动。宿主半的日志在 ~/.dsh/dev-tools.log。')));
+        return h('div', { className: 'dvt-diag' }, head(),
+          card('boot', err === null ? undefined : 'error', err === null
+            ? h('p', { className: 'dvt-diag-summary' }, '正在读取…')
+            : [
+              h('p', { key: 't', className: 'dvt-diag-summary' }, '读不到宿主控制接口'),
+              h('p', { key: 'e', className: 'dvt-diag-note' }, err),
+              h('p', { key: 'h', className: 'dvt-diag-note' },
+                '控制接口（8800）可能没启动。宿主半的日志在 ~/.dsh/dev-tools.log。'),
+            ]));
       }
 
       const hmr = self.hmr ?? {};
@@ -455,126 +570,116 @@ window.__ModuleLoader__.load({
       const hotApplied = files.filter((f) => f.verdict === 'applied-immediately');
       const svc = self.services ?? {};
 
-      // ⚠ 这个面板挂在**会话区**（宽容器）里，不是窄侧栏 ——
-      //   限宽 + 居中 + 内边距，否则每一行会横跨整个会话区、右边全是空白。
-      return h('div', {
-        style: {
-          fontSize: 13, overflowY: 'auto',
-          width: '100%', maxWidth: 900, margin: '0 auto',
-          padding: '14px 20px 24px', boxSizing: 'border-box',
-        },
-      },
+      // 结论基调：需重启 > 有变更（运行期读盘的数据，已立即生效）> 一致。
+      // 徽标与卡片描边都跟着它走 —— 语义色只有这样一处来源，不会各写各的。
+      const tone = needRestart.length > 0 ? 'error' : (changed.length > 0 ? 'warn' : 'ok');
+      const toneWord = tone === 'error' ? '需重启' : (tone === 'warn' ? '已生效' : '一致');
 
-        // ① 结论条
-        h('div', {
-          style: {
-            ...box,
-            background: needRestart.length > 0
-              ? 'rgba(255,107,90,.14)'
-              : changed.length > 0 ? 'rgba(255,200,0,.12)' : 'rgba(120,200,120,.10)',
-          },
-        },
-          h('div', { style: { lineHeight: 1.6 } }, self.summary ?? '（宿主没给结论）'),
-          h('div', { style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' } },
-            h('button', {
-              onClick: load,
-              disabled: busy,
-              style: {
-                fontSize: 12, padding: '3px 10px', borderRadius: 4, cursor: busy ? 'default' : 'pointer',
-                border: '1px solid rgba(255,255,255,.22)', background: 'transparent', color: 'inherit',
-              },
-            }, busy ? '刷新中…' : '刷新'),
-            at === null ? null : h('span', { style: { ...dim, fontSize: 11 } },
-              `读于 ${at.toLocaleTimeString()}`))),
+      return h('div', { className: 'dvt-diag' }, head(),
+        h('div', { className: 'dvt-diag-body' },
 
-        // ② 环境
-        h('div', { style: box },
-          h('div', { style: h4 }, '环境'),
-          h('div', { style: kv },
-            row('宿主启动', self.processStartedAt === null ? '读不到' : new Date(self.processStartedAt).toLocaleString()),
-            row('本模块加载', self.loadedAt === null ? '读不到' : new Date(self.loadedAt).toLocaleString()),
-            row('安装方式', inst.kind === undefined ? '未知'
-              : (inst.kind === 'link'
-                ? h('span', null, 'link（改的就是正在跑的那份）')
-                : h('span', { style: { color: '#ffc800' } }, '复制安装（改开发目录不会生效）'))),
-            row('加载自', h('code', { style: { fontSize: 11, wordBreak: 'break-all' } }, inst.path ?? '?')),
-            row('profile 依赖', self.profileDependency === null ? '读不到' : String(self.profileDependency)),
-            row('热重载', hmr.available !== true
-              ? h('span', { style: dim }, hmr.note ?? '拿不到 hmr 服务')
-              : h('span', { style: hmr.watchesSource ? { color: '#7fd17f' } : { color: '#ffc800' } },
-                hmr.watchesSource ? `监听源码：${(hmr.root ?? []).join(', ')}` : '不监听源码（改 .js 必须重启）'))),
-          hmr.note === undefined ? null : h('div', { style: { ...dim, fontSize: 11, marginTop: 6 } }, hmr.note)),
+          // ① 结论 —— 占满整行（它是"一眼看结论"的那一条）
+          h('div', { key: 'verdict', className: 'dvt-diag-span' }, card('verdict', tone, [
+            h('div', { key: 'badges', className: 'dvt-diag-verdict' },
+              h('span', { key: 'tone', className: 'dvt-diag-badge', 'data-tone': tone }, toneWord),
+              h('span', { key: 'count', className: 'dvt-diag-time' },
+                `${changed.length} / ${files.length} 个文件与加载时不同`)),
+            h('p', { key: 'sum', className: 'dvt-diag-summary' }, self.summary ?? '（宿主没给结论）'),
+          ])),
 
-        // ③ 文件
-        h('div', { style: box },
-          h('div', { style: h4 }, `文件（${changed.length} 个与加载时不同）`),
-          h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
-            files.map((f) => h('div', {
-              key: f.file,
-              style: { display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12 },
-            },
-              h('span', {
-                style: {
-                  flex: '0 0 auto', width: 14, textAlign: 'center',
-                  color: f.verdict === 'needs-restart' ? '#ff6b5a'
-                    : f.verdict === 'applied-immediately' ? '#ffc800' : '#7fd17f',
-                },
-              }, f.verdict === 'needs-restart' ? '!' : f.verdict === 'applied-immediately' ? '~' : '·'),
-              h('code', { style: { flex: '1 1 auto', wordBreak: 'break-all' } }, f.file),
-              h('span', { style: { ...dim, flex: '0 0 auto', fontSize: 11 } },
-                f.verdict === 'needs-restart' ? '需重启'
-                  : f.verdict === 'applied-immediately' ? '已生效' : '一致')))),
-          h('div', { style: { ...dim, fontSize: 11, marginTop: 8 } },
-            '判据是**内容哈希**不是修改时间 —— touch 或重写同样内容会刷新 mtime，用 mtime 会假报"未生效"。'),
-          hotApplied.length === 0 ? null : h('div', { style: { ...dim, fontSize: 11, marginTop: 4 } },
-            '标 ~ 的是运行期读盘的数据文件，改完立刻生效、不用重启。')),
+          // 左栏（窄，宽屏才分栏）：一眼要看的「环境」与「经验库」
+          h('div', { key: 'col-a', className: 'dvt-diag-col' },
+            card('env', undefined, [
+              h('h3', { key: 'h', className: 'dvt-diag-cardhead' }, '环境'),
+              h('div', { key: 'rows', className: 'dvt-diag-rows' },
+                row('宿主启动', self.processStartedAt === null ? '读不到' : new Date(self.processStartedAt).toLocaleString()),
+                row('本模块加载', self.loadedAt === null ? '读不到' : new Date(self.loadedAt).toLocaleString()),
+                row('安装方式', inst.kind === undefined ? '未知'
+                  : (inst.kind === 'link'
+                    ? 'link（改的就是正在跑的那份）'
+                    : h('span', { className: 'dvt-diag-warn' }, '复制安装（改开发目录不会生效）'))),
+                row('加载自', h('code', null, inst.path ?? '?')),
+                row('profile 依赖', self.profileDependency === null ? '读不到' : String(self.profileDependency)),
+                row('热重载', hmr.available !== true
+                  ? h('span', { className: 'dvt-diag-note' }, hmr.note ?? '拿不到 hmr 服务')
+                  : h('span', { className: hmr.watchesSource ? 'dvt-diag-ok' : 'dvt-diag-warn' },
+                    hmr.watchesSource ? `监听源码：${(hmr.root ?? []).join(', ')}` : '不监听源码（改 .js 必须重启）'))),
+              ...(hmr.note === undefined ? [] : [h('p', { key: 'hmrnote', className: 'dvt-diag-note' }, hmr.note)]),
+            ]),
+            card('exp', undefined, [
+              h('h3', { key: 'h', className: 'dvt-diag-cardhead' }, '经验库'),
+              ...(exp === null
+                ? [h('p', { key: 'na', className: 'dvt-diag-note' }, '读不到')]
+                : [h('div', { key: 'rows', className: 'dvt-diag-rows' },
+                  row('条数', String(exp.actualEntries ?? '?')),
+                  row('版本', String(exp.version ?? '?')),
+                  row('指纹', h('code', null, String(exp.declaredFingerprint ?? '?'))),
+                  row('头部一致', exp.headerStale === true
+                    ? h('span', { className: 'dvt-diag-warn' }, '不一致（头部与实际对不上）')
+                    : h('span', { className: 'dvt-diag-ok' }, '一致')))]),
+            ])),
 
-        // ④ 服务
-        h('div', { style: box },
-          h('div', { style: h4 }, `进程里的服务（${svc.count ?? 0}）`),
-          svc.available !== true
-            ? h('div', { style: dim }, svc.note ?? '读不到')
-            : h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 6px' } },
-              (svc.services ?? []).map((n) => h('code', {
-                key: n,
-                style: { fontSize: 11, padding: '1px 6px', borderRadius: 3, background: 'rgba(255,255,255,.06)' },
-              }, n))),
-          h('div', { style: { ...dim, fontSize: 11, marginTop: 8 } }, svc.note ?? '')),
+          // 右栏（宽）：文件清单、服务、日志
+          h('div', { key: 'col-b', className: 'dvt-diag-col' },
+            card('files', undefined, [
+              h('h3', { key: 'h', className: 'dvt-diag-cardhead' },
+                `文件（${changed.length} 个与加载时不同）`),
+              h('div', { key: 'list', className: 'dvt-diag-files' },
+                files.map((f) => {
+                  const v = f.verdict === 'needs-restart' ? 'err'
+                    : (f.verdict === 'applied-immediately' ? 'warn' : 'ok');
+                  const tag = f.verdict === 'needs-restart' ? '需重启'
+                    : (f.verdict === 'applied-immediately' ? '已生效' : '一致');
+                  return h('div', { key: f.file, className: 'dvt-diag-filerow' },
+                    h('span', { className: `dvt-diag-glyph dvt-diag-${v}` },
+                      f.verdict === 'needs-restart' ? '!' : (f.verdict === 'applied-immediately' ? '~' : '·')),
+                    h('code', { className: 'dvt-diag-file' }, f.file),
+                    h('span', { className: 'dvt-diag-tag' }, tag));
+                })),
+              h('p', { key: 'note', className: 'dvt-diag-note' },
+                '判据是**内容哈希**不是修改时间 —— touch 或重写同样内容会刷新 mtime，用 mtime 会假报"未生效"。'),
+              hotApplied.length === 0 ? null : h('p', { key: 'hot', className: 'dvt-diag-note' },
+                '标 ~ 的是运行期读盘的数据文件，改完立刻生效、不用重启。'),
+            ]),
 
-        // ⑤ 经验库
-        h('div', { style: box },
-          h('div', { style: h4 }, '经验库'),
-          exp === null
-            ? h('div', { style: dim }, '读不到')
-            : h('div', { style: kv },
-              row('条数', String(exp.actualEntries ?? '?')),
-              row('版本', String(exp.version ?? '?')),
-              row('指纹', String(exp.declaredFingerprint ?? '?')),
-              row('头部一致', exp.headerStale === true
-                ? h('span', { style: { color: '#ffc800' } }, '不一致（头部与实际对不上）')
-                : '一致'))),
+            card('svc', undefined, [
+              h('h3', { key: 'h', className: 'dvt-diag-cardhead' },
+                `进程里的服务（${svc.count ?? 0}）`),
+              ...(svc.available !== true
+                ? [h('p', { key: 'na', className: 'dvt-diag-note' }, svc.note ?? '读不到')]
+                : [
+                  h('div', { key: 'chips', className: 'dvt-diag-chips' },
+                    (svc.services ?? []).slice(0, allSvc ? undefined : 24)
+                      .map((n) => h('code', { key: n, className: 'dvt-diag-chip' }, n))),
+                  (svc.services ?? []).length > 24
+                    ? h('button', {
+                      key: 'more', className: 'dvt-diag-more', type: 'button',
+                      onClick: () => setAllSvc((v) => !v),
+                    }, allSvc ? '只看前 24 个' : `展开全部 ${svc.services.length} 个`)
+                    : null,
+                ]),
+              svc.note === undefined || svc.available !== true ? null
+                : h('p', { key: 'note', className: 'dvt-diag-note' }, svc.note),
+            ]),
 
-        // ⑥ 日志
-        //
-        // 为什么这一区不能省：**宿主插件的 console.log 桌面端不落盘**，
-        // 所以"插件到底做了什么"本来是完全看不见的 —— 故障表现是
-        // "不崩溃但什么都不做"，只能靠猜。这里是唯一的观察窗口。
-        h('div', { style: box },
-          h('div', { style: h4 }, '宿主日志'),
-          log === null
-            ? h('div', { style: dim }, '读不到')
-            : log.ok !== true
-              ? h('div', { style: dim }, log.error ?? '读不到')
-              : h('div', null,
-                h('div', { style: { ...dim, fontSize: 11, marginBottom: 6 } },
-                  `${log.note ?? ''}${log.truncated === true ? '（更早的没显示）' : ''}`),
-                h('pre', {
-                  style: {
-                    margin: 0, fontSize: 11, lineHeight: 1.5, maxHeight: 260, overflow: 'auto',
-                    whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                    background: 'rgba(255,255,255,.04)', padding: '6px 8px', borderRadius: 4,
-                  },
-                }, (log.lines ?? []).join('\n') || '（空）'))));
+            // ⑥ 日志
+            //
+            // 为什么这一区不能省：**宿主插件的 console.log 桌面端不落盘**，
+            // 所以"插件到底做了什么"本来是完全看不见的 —— 故障表现是
+            // "不崩溃但什么都不做"，只能靠猜。这里是唯一的观察窗口。
+            card('log', undefined, [
+              h('h3', { key: 'h', className: 'dvt-diag-cardhead' }, '宿主日志'),
+              ...(log === null
+                ? [h('p', { key: 'na', className: 'dvt-diag-note' }, '读不到')]
+                : (log.ok !== true
+                  ? [h('p', { key: 'err', className: 'dvt-diag-note' }, log.error ?? '读不到')]
+                  : [
+                    h('p', { key: 'note', className: 'dvt-diag-note' },
+                      `${log.note ?? ''}${log.truncated === true ? '（更早的没显示）' : ''}`),
+                    h('pre', { key: 'pre', className: 'dvt-diag-log' },
+                      (log.lines ?? []).join('\n') || '（空）'),
+                  ])),
+            ]))));
     }
 
     function ensureStyle() {
