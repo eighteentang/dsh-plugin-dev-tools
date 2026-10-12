@@ -189,24 +189,46 @@ function buildRuleTextInner(experienceFile) {
  * @returns {() => void} 注销器
  */
 export function installDevRuleSection(ctx, experienceFile) {
-  const systemPrompt = ctx.get?.('systemPrompt');
-  if (systemPrompt === undefined) {
-    ctx.logger?.warn?.('dev-tools: 没有 systemPrompt 服务，开发规矩无法注入');
-    return () => {};
+  /** 真正注册段落。抽出来是因为两条路（inject / 兜底 get）都要用它。 */
+  const register = (systemPrompt) => {
+    try {
+      // order 取一个偏后的值：让它在提示词里靠近"工作方式"那一段，
+      // 而不是插在最前面把身份说明挤开。
+      return systemPrompt.section({
+        name: 'dev-tools/strict-preflight',
+        order: 900,
+        text: () => buildRuleText(experienceFile),
+      });
+    } catch (error) {
+      ctx.logger?.warn?.(`dev-tools: 注册规矩段落失败 —— ${String(error?.message ?? error)}`);
+      return () => {};
+    }
+  };
+
+  // ⚠ 2026-10-12 改：这里第一句**曾经**是 `const systemPrompt = ctx.get?.('systemPrompt')`。
+  //   那与本仓自己的结论**相反** —— AGENTS.md 与 index.js 都写着
+  //   "`ctx.get` 拿不到服务，必须用 `ctx.inject`"。
+  //   更要紧的是失败方式：原来的写法拿不到时只 `warn`，而宿主插件的 warn
+  //   **桌面端不落盘**（日志是黑洞），于是"开发规矩根本没注入"这件事
+  //   **静默发生** —— 用户还以为自检清单在每轮生效。
+  //   改用 ctx.inject：服务就绪时注册、服务消失时自动注销。
+  if (typeof ctx.inject === 'function') {
+    const fiber = ctx.inject(['systemPrompt'], (scoped) => register(scoped.systemPrompt));
+    return () => {
+      try {
+        if (typeof fiber?.dispose === 'function') fiber.dispose();
+        else if (typeof fiber === 'function') fiber();
+      } catch { /* 注销失败不该影响插件卸载 */ }
+    };
   }
 
-  try {
-    // order 取一个偏后的值：让它在提示词里靠近"工作方式"那一段，
-    // 而不是插在最前面把身份说明挤开。
-    return systemPrompt.section({
-      name: 'dev-tools/strict-preflight',
-      order: 900,
-      text: () => buildRuleText(experienceFile),
-    });
-  } catch (error) {
-    ctx.logger?.warn?.(`dev-tools: 注册规矩段落失败 —— ${String(error?.message ?? error)}`);
+  // 兜底：只有极老的上下文没有 inject（离线校验器里的假 ctx 就是这一类）
+  const systemPrompt = ctx.get?.('systemPrompt');
+  if (systemPrompt === undefined) {
+    ctx.logger?.warn?.('dev-tools: 上下文没有 inject、也拿不到 systemPrompt，开发规矩无法注入');
     return () => {};
   }
+  return register(systemPrompt);
 }
 
 /**

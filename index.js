@@ -49,14 +49,17 @@ const ConfigSchema = {
       const input = (value !== null && typeof value === 'object') ? value : {};
       const issues = [];
 
-      const trigger = input.trigger ?? 'alt-hover';
-      if (!['alt-hover', 'hover', 'click'].includes(trigger)) {
-        issues.push({ message: `trigger 必须是 alt-hover | hover | click，收到 ${String(trigger)}` });
-      }
-      const ruleScope = input.ruleScope ?? 'session';
-      if (!['session', 'global', 'off'].includes(ruleScope)) {
-        issues.push({ message: `ruleScope 必须是 session | global | off，收到 ${String(ruleScope)}` });
-      }
+      // ⚠ 2026-10-12：这里**删掉了三个配置字段** —— `enabled` / `trigger` / `ruleScope`。
+      //   它们不是"暂时没用"，而是**永远不起作用**，留着就是给用户一个假旋钮：
+      //     · `enabled`   —— 真正生效的开关在设置页里（状态存浏览器 localStorage）。
+      //                      这个字段只被 index.js 用来打了一句日志。
+      //     · `trigger`   —— **宿主半从不读它**。设置页那三个选项是客户端自己的
+      //                      localStorage 状态，而其中两个（hover / click）根本没实现
+      //                      （UI 上当时自己还写着"尚未实现"）。已把选项一并撤掉。
+      //     · `ruleScope` —— 除了这里的校验与存值，**全库没有第二处引用**。
+      //   判据：**界面上承诺了但不生效的配置，比没有这个配置更糟** ——
+      //   用户会以为自己调过了。要加能力就真加，不要留转起来没反应的旋钮。
+      //
       // 经验库文件：留空则用插件自带的那一份（experience/经验库.md）。
       // 想额外挂自己的文件时填绝对路径。
       if (input.experienceFile !== undefined && typeof input.experienceFile !== 'string') {
@@ -66,9 +69,6 @@ const ConfigSchema = {
 
       return {
         value: {
-          enabled: input.enabled === true,
-          trigger,
-          ruleScope,
           experienceFile: typeof input.experienceFile === 'string' ? input.experienceFile : '',
         },
       };
@@ -79,18 +79,27 @@ const ConfigSchema = {
 export const Config = ConfigSchema;
 export const name = 'dev-tools';
 
-/** 解析 Electron 可执行文件路径（重启要用它拉起新实例） */
+/**
+ * 解析 Electron 可执行文件路径（重启要用它拉起新实例）。
+ *
+ * ⚠ 2026-10-12：这里**曾经**还有一个硬编码兜底
+ *   `const candidates = [process.execPath, 'D:\\DSH\\DeepSeek Harness.exe']`，已删。两个理由：
+ *
+ *   · 它在**别人的机器上指向不存在的路径**（可移植性陷阱）；
+ *   · 更关键的是它**永远轮不到** —— Electron 下 `process.execPath` 必然是 `.exe`，
+ *     原来那个循环第一个候选就返回了。**"看着像兜底、实际不可达"的守卫比没有更误导**：
+ *     它让人以为"非 Electron 环境有保护"，其实没有。
+ *
+ *   顺带记一笔：这个路径之所以长期没被发现，是因为"无硬编码路径"那条校验器
+ *   只匹配 `C:\Users\<数字>` 这种形式。**断言覆盖面不够 = 假绿。**
+ */
 function findAppPath() {
-  const candidates = [process.execPath, 'D:\\DSH\\DeepSeek Harness.exe'];
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.toLowerCase().endsWith('.exe')) return candidate;
-  }
-  return process.execPath;
+  return typeof process.execPath === 'string' ? process.execPath : '';
 }
 
 export function apply(ctx, config) {
   ctx.logger?.info?.(
-    `dev-tools: 宿主半已加载（开发模式初值 ${config.enabled === true ? '开' : '关'}）`,
+    `dev-tools: 宿主半已加载（开发模式当前 ${isDevModeOn() ? '开' : '关'}）`,
   );
 
   // 应用控制接口（重启 / 关闭客户端）—— 供「应用控制按钮」这个小工具使用。
@@ -116,6 +125,12 @@ export function apply(ctx, config) {
         tool: probeExperienceTool(ctx, config.experienceFile),
       }),
     });
+    // 端口被占用这件事**不在这里判**：`server.listen()` 的 'error' 是**异步**触发的，
+    // 同步读 `control.listenError` 几乎必然读到 null —— 那就成了一个
+    // "看着像兜底、实际永远轮不到"的守卫（本文件 findAppPath 上面刚批过这种写法）。
+    // 它的权威落点有两处，都不需要这里再加一遍：
+    //   ① `~/.dsh/dev-tools.log` —— app-control.js 的 logLine 会写明"控制端口启动失败"
+    //   ② 设置页 —— 客户端连不上时会有明确横幅："开关状态没能通知给宿主侧"
   } catch (error) {
     ctx.logger?.warn?.(`dev-tools: 控制接口启动失败 —— ${String(error?.message ?? error)}`);
   }

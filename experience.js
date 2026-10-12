@@ -37,7 +37,7 @@
  * 第二种情况很常见（发现旧经验写错了、补一句），只靠日期会漏掉。
  */
 
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, copyFileSync, renameSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -144,6 +144,20 @@ const CLIP_TIERS = [
   { symptom: 60, solution: 30 },
   { symptom: 40, solution: 20 },
 ];
+
+/**
+ * 最后一道"降深度"的档：**只留标题，不要症状与解法**。
+ *
+ * 为什么要有它（2026-10-12 加）：在这之前，四档都装不下就直接**丢条目** ——
+ * 实测 59 条通用经验里有 **24 条永远进不了上下文**（索引顶格在 4796/4800），
+ * 而且丢的是**最早**的、不是"最不重要的"，丢掉的条目不会再回来。
+ *
+ * 判据：索引的用途是"扫一眼有没有对得上的症状"，
+ * **漏掉一条的代价，远大于某条描述短一点。**
+ * 所以顺序必须是：先牺牲描述深度 → 实在装不下才丢条目。
+ * （这也正是 CLIP_TIERS 上方那段注释原本写的意图：能装下就整份装下。）
+ */
+const TITLE_ONLY = { symptom: 0, solution: 0 };
 
 /**
  * 从文件里读元信息头。
@@ -295,7 +309,15 @@ export function buildExperienceText(filePath, budget = INDEX_BUDGET) {
     '',
     '## 开发经验索引（动手前先扫一眼有没有对得上的症状）',
     '',
-    `来源：\`${parsed.path}\`  —— 需要细节时读那个文件的对应条目。`,
+    // ⚠ 2026-10-12：这里**曾经**写 `来源：\`${parsed.path}\`` —— 也就是把**本机绝对路径**
+    //   （例如 `D:\DSH-dev\dev-tools\experience\经验库.md`）原样注入进每一轮提示词。三个毛病：
+    //     · 把安装路径泄漏给每个使用者的模型（路径里常带用户名、目录结构）；
+    //     · **索引长度随安装路径长短漂移** → 省略条数也跟着漂（实测 4796 vs 4674、省略 24 vs 25），
+    //       于是"注入体积"这类断言在不同机器上结论不同；
+    //     · 白占本就顶格的预算（一个长路径 ≈ 一条短经验）。
+    //   现在只写文件名，不写盘上位置 —— 模型用它反查时按文件名找即可，
+    //   而"这个文件在哪"属于**本机事实**，不该进提示词。
+    `来源：本插件自带的经验库 \`experience/经验库.md\` —— 需要细节时读那个文件的对应条目。`,
     `版本：${meta.version ?? '未知'}　通用条目：${general.length} 条`
       + (skipped > 0 ? `（另有 ${skipped} 条项目特定，未列出）` : '')
       + `　更新于：${meta.updatedAt ?? '未知'}`,
@@ -306,8 +328,11 @@ export function buildExperienceText(filePath, budget = INDEX_BUDGET) {
 
   const renderEntry = (entry, tier) => {
     const out = [`- **${entry.id} ${entry.title}**`];
-    if (entry.symptom !== '') out.push(`  - 症状：${clip(entry.symptom, tier.symptom)}`);
-    if (entry.solution !== '') out.push(`  - 解法：${clip(entry.solution, tier.solution)}`);
+    // tier 给 0 表示"这一档不要这行"（TITLE_ONLY）。
+    // ⚠ **不能**让它走 clip：clip(text, 0) 会产出一行只有省略号的"症状：…"，
+    //   比不写更乱，而且白占预算。
+    if (tier.symptom > 0 && entry.symptom !== '') out.push(`  - 症状：${clip(entry.symptom, tier.symptom)}`);
+    if (tier.solution > 0 && entry.solution !== '') out.push(`  - 解法：${clip(entry.solution, tier.solution)}`);
     return out;
   };
 
@@ -347,20 +372,50 @@ export function buildExperienceText(filePath, budget = INDEX_BUDGET) {
     ? `\n\n  ⚠ 索引已到 ${budget} 字符预算，为保证**最新经验**一定进得来，`
       + `已省略最早的 ${omitted} 条 —— 完整列表见经验库全文。`
     : '');
-  const renderAll = (list) => [header, ...list.flatMap((entry) => renderEntry(entry, tightest))].join('\n');
+  const renderList = (list, tierOf) =>
+    [header, ...list.flatMap((entry, i) => renderEntry(entry, tierOf(entry, i)))].join('\n');
 
+  // ②-a 先把**所有条目**退成"只有标题" —— 一条都不丢。
+  //
+  // ⚠ 2026-10-12 新增。它修的实测问题是：在这之前，四档都装不下就直接丢条目，
+  //   59 条通用经验里 **24 条永远进不了上下文**，且丢的是**最早**的、不是"最不重要的"。
+  //   判据：**漏掉一条的代价，远大于某条描述短一点。**
+  const allTitles = renderList(capped, () => TITLE_ONLY);
+  if (allTitles.length <= budget) {
+    // ②-b 还剩多少预算，就从**最新**往回逐条把描述加回来。
+    //
+    // 为什么从最新开始：经验库的价值是"记住最近踩的坑"，老条目多半已内化进代码。
+    // 为什么**继续扫**而不是"一放不下就 break"：各条标题长短不一，
+    //   跳过一条胖的可能还有空间装下一条瘦的 —— break 会白扔预算。
+    const withDetail = new Set();
+    let headroom = budget - allTitles.length;
+    for (let i = capped.length - 1; i >= 0; i -= 1) {
+      const cost = renderEntry(capped[i], tightest).join('\n').length
+                 - renderEntry(capped[i], TITLE_ONLY).join('\n').length;
+      if (cost <= headroom) {
+        headroom -= cost;
+        withDetail.add(i);
+      }
+    }
+    return renderList(capped, (entry, i) => (withDetail.has(i) ? tightest : TITLE_ONLY));
+  }
+
+  // ②-c 连"只有标题"都装不下 → 才按预算丢条目（保最新的连续一段）。
+  //
+  // 这里也用 TITLE_ONLY：既然连标题都塞不下，就没道理再给留下来的条目配描述。
+  // 逐个试"连续后缀"的原因见上面那段长注释（不能"一放不下就 break"）。
   let kept = capped;
   for (let k = capped.length; k >= 0; k -= 1) {
     const suffix = capped.slice(capped.length - k);
     const omitted = capped.length - k;
     // 判断的是**最终文本**：正文 + 省略说明
-    if (renderAll(suffix).length + noteFor(omitted).length <= budget) {
+    if (renderList(suffix, () => TITLE_ONLY).length + noteFor(omitted).length <= budget) {
       kept = suffix;
       break;
     }
   }
   const omittedFinal = capped.length - kept.length;
-  return renderAll(kept) + noteFor(omittedFinal);
+  return renderList(kept, () => TITLE_ONLY) + noteFor(omittedFinal);
 }
 
 /**
@@ -473,6 +528,28 @@ export function appendExperience(entry, filePath) {
     // ── 第一步：把新条目接到正文末尾
     const before = readFileSync(path, 'utf8');
     const parsedBefore = parseExperienceFile(path);
+
+    // ── 去重（2026-10-12 加）：同一条经验不要写两遍
+    //
+    // 判据用**症状 + 解法**的规范化文本，而不是标题 —— 标题只是一句概括、常被改写，
+    // 正文才是"这是同一件事"的证据。命中就返回已有编号、**不写盘**，
+    // 并带 `duplicate: true` 让调用方（模型）知道该去更新而不是新增。
+    const norm = (s) => String(s ?? '').replace(/\s+/g, '');
+    const dup = parsedBefore.entries.find(
+      (e) => norm(e.symptom) === norm(symptom) && norm(e.solution) === norm(solution),
+    );
+    if (dup !== undefined) {
+      return {
+        ok: true,
+        id: dup.id,
+        duplicate: true,
+        entries: parsedBefore.entries.length,
+        version: parsedBefore.meta?.version ?? '',
+        fingerprint: parsedBefore.computedFingerprint,
+        headerStale: false,
+      };
+    }
+
     const id = nextEntryId(parsedBefore.entries);
     const stamp = todayStamp();
 
@@ -496,27 +573,49 @@ export function appendExperience(entry, filePath) {
       '',
     ].join('\n');
 
-    writeFileSync(path, `${before.trimEnd()}\n${block}`, 'utf8');
+    // ⚠ 2026-10-12 改成**一次原子替换**（原来要往真文件写两次）。
+    //
+    // 原来的写法：先 `writeFileSync(path, 正文 + 新条目)`，再读回来算指纹、
+    // 再 `writeFileSync(path, 带新头部的全文)`。问题是**中间那一刻真文件是不一致的** ——
+    // 条目已经加上了、头部还是旧的（条数/指纹都对不上）。
+    // 进程在两步之间挂掉、或别的读者正好在那一刻读，就会看到那个坏状态；
+    // 而本文件末尾自己还断言过 `headerStale` 正常情况下应为 false ——
+    // 那等于承认这个中间态存在。所以现在：
+    //
+    //   · 全程只动**临时文件**；
+    //   · 最后 `copyFileSync` 备份上一版（`.gitignore` 已忽略 `*.bak`），
+    //     再 `renameSync` 一次替换真文件 —— 同卷 rename 是原子的，
+    //     读者要么看到旧的、要么看到新的，**不存在中间态**。
+    const tmpPath = `${path}.tmp-${process.pid}`;
+    try {
+      writeFileSync(tmpPath, `${before.trimEnd()}\n${block}`, 'utf8');
 
-    // ── 第二步：重新解析，拿到最终内容才能算指纹
-    const after = parseExperienceFile(path);
-    const count = after.entries.length;
-    const fingerprint = after.computedFingerprint;
+      // ── 第二步：从临时文件重新解析，拿到最终条目数与指纹
+      const after = parseExperienceFile(tmpPath);
+      const meta = {
+        schema: 1,
+        version: stamp,
+        entries: after.entries.length,
+        updatedAt: stamp,
+        fingerprint: after.computedFingerprint,
+      };
 
-    // ── 第三步：把头部换成全新的（不保留旧值 —— 条数/日期/指纹必须与实际一致）
-    const meta = {
-      schema: 1,
-      version: stamp,
-      entries: count,
-      updatedAt: stamp,
-      fingerprint,
-    };
-    const current = readFileSync(path, 'utf8');
-    const withHeader = current.replace(
-      /<!--\s*dev-tools-experience\s*[\s\S]*?-->/,
-      `<!-- dev-tools-experience\n${JSON.stringify(meta, null, 2)}\n-->`,
-    );
-    writeFileSync(path, withHeader, 'utf8');
+      // ── 第三步：把头部换成全新的（不保留旧值 —— 条数/日期/指纹必须与实际一致）
+      const body = readFileSync(tmpPath, 'utf8').replace(
+        /<!--\s*dev-tools-experience\s*[\s\S]*?-->/,
+        `<!-- dev-tools-experience\n${JSON.stringify(meta, null, 2)}\n-->`,
+      );
+      writeFileSync(tmpPath, body, 'utf8');
+
+      // ── 第四步：备份 + 原子替换
+      copyFileSync(path, `${path}.bak`);
+      renameSync(tmpPath, path);
+    } finally {
+      // 成功时 tmp 已被 rename 走；这里只清理失败残留
+      if (existsSync(tmpPath)) {
+        try { rmSync(tmpPath); } catch { /* ignore */ }
+      }
+    }
 
     const check = parseExperienceFile(path);
     return {

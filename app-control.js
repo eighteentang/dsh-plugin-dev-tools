@@ -399,16 +399,28 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode }) {
     res.end(JSON.stringify({ ok: false, error: `未知动作 ${action}` }));
   });
 
+  /**
+   * ⚠ 2026-10-12：这里原来只 `logLine` 一句就完了。两个问题：
+   *   ① 宿主插件的日志桌面端**不落盘**，所以"控制端口没起来"除了这一行文件日志，
+   *      没有任何地方说明原因 —— 而它的后果是**设置页里所有开关都调不通**；
+   *   ② 错误没有被暴露出去，调用方无法据此提示用户。
+   *   现在把错误记下来，并挂到返回对象上（`listenError`），由 index.js 写进启动日志。
+   */
+  let listenError = null;
   server.on('error', (error) => {
-    logLine(`控制端口启动失败：${error.message}`);
+    listenError = String(error?.message ?? error);
+    logLine(`控制端口启动失败（${CONTROL_PORT} 可能被占用）：${listenError}`);
   });
 
   server.listen(CONTROL_PORT, '127.0.0.1', () => {
+    listenError = null;
     logLine(`控制接口就绪 http://127.0.0.1:${CONTROL_PORT}/dev-tools/`);
   });
 
   return {
     port: CONTROL_PORT,
+    /** 端口起不来时的错误文本；正常为 null。调用方据此提示用户。 */
+    get listenError() { return listenError; },
     dispose() {
       try { server.close(); } catch { /* ignore */ }
     },

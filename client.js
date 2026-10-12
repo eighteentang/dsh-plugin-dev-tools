@@ -43,6 +43,22 @@ window.__ModuleLoader__.load({
      *   · 开关是**交互式**的东西，必须立即生效
      * 宿主半需要知道状态时（阶段 3 的规矩注入）由客户端主动同步。
      */
+    /**
+     * 宿主控制接口的地址 —— **两端的默认端口必须一致**。
+     *
+     * ⚠ 2026-10-12 改：这里原来是 **5 处裸写**的 `http://127.0.0.1:8800`，
+     *   而宿主端是 `Number(process.env.DEV_TOOLS_PORT ?? 8800)`。
+     *   于是"改了宿主端口、客户端不跟着变" → 所有请求失败，而校验器可能全绿
+     *  （正是经验库里"两端各写一份同一个字符串"那条坑）。
+     *   现在收敛成一个常量，并由 `verify-dev-tools-host` 的跨端断言守着两边一致。
+     *
+     * ⚠ **已知限制**（写在这里，免得有人去踩）：客户端**读不到**宿主的环境变量，
+     *   所以 `DEV_TOOLS_PORT` 一旦被覆盖，客户端必然连不上。
+     *   这是刻意取舍 —— 不为一个只用于调试的开关增加一条注入通道。
+     */
+    const CONTROL_PORT = 8800;
+    const CONTROL_BASE = `http://127.0.0.1:${CONTROL_PORT}/dev-tools`;
+
     const STORE = {
       read() {
         try {
@@ -307,7 +323,7 @@ window.__ModuleLoader__.load({
       const attempt = (left) => {
         let promise;
         try {
-          promise = fetch('http://127.0.0.1:8800/dev-tools/dev-mode', {
+          promise = fetch(`${CONTROL_BASE}/dev-mode`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ enabled: enabled === true, updatedAt: stamp }),
@@ -361,7 +377,7 @@ window.__ModuleLoader__.load({
       try {
         // cache: 'no-store' —— 用户替换了经验库文件后点刷新，
         // 不能让浏览器缓存把旧结果端上来。
-        const res = await fetch('http://127.0.0.1:8800/dev-tools/experience', {
+        const res = await fetch(`${CONTROL_BASE}/experience`, {
           method: 'GET',
           cache: 'no-store',
         });
@@ -513,7 +529,7 @@ window.__ModuleLoader__.load({
       const run = (action, confirmText, pendingText) => {
         if (!globalThis.confirm(confirmText)) return;
         setBusy(action);
-        fetch(`http://127.0.0.1:8800/dev-tools/${action}`, {
+        fetch(`${CONTROL_BASE}/${action}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
         })
@@ -525,7 +541,7 @@ window.__ModuleLoader__.load({
           })
           .catch((error) => {
             setBusy(null);
-            globalThis.alert(`操作失败：${error?.message ?? error}\n\n宿主控制接口（8800）可能没启动。`);
+            globalThis.alert(`操作失败：${error?.message ?? error}\n\n宿主控制接口（${CONTROL_PORT}）可能没启动。`);
           });
       };
 
@@ -559,127 +575,24 @@ window.__ModuleLoader__.load({
         }, busy === 'quit' ? '…' : '💀'));
     }
 
-    /**
-     * ⚠ 以下组件**当前未使用**（保留作参考）。
-     *
-     * 它曾经用来替换侧边栏底部「账号那一行」（`settings.launcher`），
-     * 但**代价不可接受** —— 那个槽位的占据者是 `AccountMenu`，
-     * 它拥有"账号上拉菜单"，不只是"头像 + 用户名"。
-     * 顶掉之后用户名和上拉菜单全没了，只剩我实现的"打开设置"。
-     *
-     * 结论：`single` 槽位**可以**用 priority 遮蔽（机制是真的），
-     * 但遮蔽"功能件"（ownerProps 里有 `openSettings` 这类能力字段的）
-     * = 自己重写那个功能，必须先把它做全。
-     */
-    function SidebarAccountRow(props) {
-      ensureStyle();
-      const [busy, setBusy] = React.useState(null);
-
-      // ⚠ 关键样式同时写内联。
-      //
-      //   第一版完全靠注入的 CSS 类，结果用户报告"没看见按钮" ——
-      //   而注入 `<style>` 到 document.head 这条路**我无法从外部验证**
-      //   （可能被槽位渲染的样式隔离，也可能选择器被覆盖）。
-      //   内联样式不依赖那个，至少保证"看得见"。
-      const BTN = {
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        width: '26px', height: '26px', minWidth: '26px', flex: '0 0 auto',
-        padding: '0', margin: '0', borderRadius: '50%',
-        border: '1px solid rgba(139,147,167,.35)',
-        background: 'rgba(139,147,167,.14)',
-        color: '#c8cede', fontFamily: 'inherit', fontSize: '14px',
-        lineHeight: '1', cursor: 'pointer',
-      };
-
-      const run = (action, confirmText, pendingText) => {
-        if (!globalThis.confirm(confirmText)) return;
-        setBusy(action);
-        fetch(`http://127.0.0.1:8800/dev-tools/${action}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-        })
-          .then((res) => res.json())
-          .then((result) => {
-            if (result?.ok !== true) throw new Error(result?.error ?? '返回异常');
-            // 界面随后会被进程退出带下去，不需要复位 busy
-            if (pendingText !== null) globalThis.alert(pendingText);
-          })
-          .catch((error) => {
-            setBusy(null);
-            globalThis.alert(`操作失败：${error?.message ?? error}\n\n宿主控制接口（8800）可能没启动。`);
-          });
-      };
-      // 账号相关信息由 ownerProps 提供；缺失时降级成"没有文字"，不报错。
-      const wide = props?.wide !== false;
-      const openSettings = typeof props?.openSettings === 'function' ? props.openSettings : null;
-
-      return h('div', {
-        className: 'dvt-account-row',
-        style: {
-          display: 'flex', flexDirection: 'row', alignItems: 'center',
-          gap: '6px', width: '100%', minWidth: '0',
-        },
-      },
-        // ── 保留「打开设置」的能力（这个槽位原本负责它，不能被顶掉）──
-        openSettings === null ? null : h('button', {
-          type: 'button',
-          className: 'dvt-account-open',
-          title: '打开设置',
-          'aria-label': '打开设置',
-          style: {
-            display: 'inline-flex', alignItems: 'center', gap: '6px',
-            flex: '1 1 auto', minWidth: '0',
-            padding: '0', margin: '0', border: 'none', background: 'transparent',
-            color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer',
-          },
-          onClick: (event) => { event.stopPropagation(); openSettings(); },
-        },
-        h('span', { 'aria-hidden': 'true', style: { flex: '0 0 auto' } }, '⚙'),
-        // 用户名：宽栏时显示，窄栏（rail）时隐藏 —— 与官方 wide 语义一致
-        wide ? h('span', {
-          style: {
-            flex: '1 1 auto', minWidth: '0', overflow: 'hidden',
-            textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            opacity: '.8',
-          },
-        }, '设置') : null),
-
-        h('button', {
-          type: 'button',
-          className: 'dvt-icon-btn',
-          style: BTN,
-          title: '重启 DeepSeek Harness（新窗口会自动打开）',
-          'aria-label': '重启',
-          disabled: busy !== null,
-          onClick: (event) => {
-            event.stopPropagation();
-            event.preventDefault();
-            run('restart',
-              '重启 DeepSeek Harness？\n\n'
-              + '接下来会发生什么：\n'
-              + '  1. 这个窗口会关闭\n'
-              + '  2. 大约 5~10 秒后自动重新打开（右下角没有提示，就是在启动中）\n'
-              + '  3. 请**不要**手动去点桌面图标 —— 那会撞上单实例锁，看起来像没反应\n\n'
-              + '如果 15 秒后还没回来，再手动打开即可。',
-              '正在重启…\n\n窗口马上关闭，请等它自己回来（约 5~10 秒）。');
-          },
-        }, busy === 'restart' ? '…' : '⟳'),
-        h('button', {
-          type: 'button',
-          className: 'dvt-icon-btn',
-          style: BTN,
-          title: '关闭 DeepSeek Harness',
-          'aria-label': '关闭',
-          disabled: busy !== null,
-          onClick: (event) => {
-            event.stopPropagation();
-            event.preventDefault();
-            run('quit',
-              '关闭 DeepSeek Harness？\n\n窗口会关闭，不会自动重开。',
-              '正在关闭…');
-          },
-        }, busy === 'quit' ? '…' : '⏻'));
-    }
+    // ══════════════════════════════════════════════════════════════════
+    // ⚠ 教训（组件已删，教训留着）：`single` 槽位可以遮蔽，但别遮蔽"功能件"
+    //
+    // 曾经写过一个 `SidebarAccountRow` 组件，想用它替换侧边栏底部「账号那一行」
+    //（`settings.launcher`），用 `priority: -1` 遮蔽 —— **遮蔽确实生效了**，
+    // 但代价不可接受：那个槽位的占据者是 `dsh-client-ui-settings-account` 的
+    // `AccountMenu`，它不只是"头像 + 用户名"，还**拥有账号上拉菜单**。
+    // 顶掉之后：用户名没了、上拉菜单没了，只剩自己实现的"打开设置" ——
+    // **功能被削掉了，这比"按钮位置不好"严重得多。**
+    //
+    // 判据：看到 `ownerProps` 里有 `openSettings` 这类**能力型**字段，
+    // 就说明那个槽位不是装饰位、而是功能件；遮蔽它 = 自己重写那个功能，
+    // 必须先把它做全（上拉菜单里的每一项）才谈得上替换。
+    //
+    // 那个组件本体于 2026-10-12 删除：它与在用的 `run()` **逐字节相同**，
+    // 停放的代码与活代码重复就是维护债（改了活的、停的会悄悄漂移）。
+    // 需要时去 git 历史取。
+    // ══════════════════════════════════════════════════════════════════
 
     /**
      * 每个工具是自包含的：
@@ -717,8 +630,9 @@ window.__ModuleLoader__.load({
           // 看到 `ownerProps` 里有 `openSettings` 这种"能力型"字段，
           // 就说明它不是一个装饰位，而是一个**功能件** —— 遮蔽它 = 自己重写那个功能。
           //
-          // `SidebarAccountRow` 组件先留着（未使用），以后如果真要做账号菜单替换
-          // 可以拿它当起点，但必须先把 AccountMenu 的行为补全（上拉菜单里的每一项）。
+          // 那个 `SidebarAccountRow` 组件已于 2026-10-12 删除（未使用，且与在用的
+          // run() 逐字节相同）。以后真要做账号菜单替换，先按上面的判据把
+          // AccountMenu 的行为补全（上拉菜单里的每一项），再谈替换。
           // ══════════════════════════════════════════════════════════════
           return ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
             name: 'sidebar.footer.action',
@@ -1052,7 +966,7 @@ window.__ModuleLoader__.load({
         enable(host) {
           const { ctx, React } = host;
 
-          const CONTROL_URL = 'http://127.0.0.1:8800/dev-tools/requirement-template';
+          const CONTROL_URL = `${CONTROL_BASE}/requirement-template`;
           const INTERVAL_MS = 400;
 
           // 宿主没起来 / 模板文件读不到时的兜底 —— 不让整个功能失效
@@ -1488,7 +1402,7 @@ window.__ModuleLoader__.load({
         masterChangedAt: Date.now(),
       });
       const setTool = (tool, on) => commit({ ...state, tools: { ...state.tools, [tool.id]: on } });
-      const setTrigger = (value) => commit({ ...state, trigger: value });
+      // 这里**曾经**有 `const setTrigger = …` —— 随下面那组单选按钮一起删掉了（2026-10-12）。
 
       const switchEl = (on, onChange, disabled) => h('button', {
         className: 'dvt-switch',
@@ -1520,20 +1434,14 @@ window.__ModuleLoader__.load({
         // 经验库：当前是哪一版、多少条，带刷新按钮
         h(ExperienceBlock, null),
 
+        // ⚠ 2026-10-12：这里**曾经**是一组三选一的单选按钮（alt-hover / hover / click），
+        //   其中 hover 与 click **从未实现** —— UI 上当时自己还写着"（尚未实现）"。
+        //   **把选不动的旋钮摆出来，比没有这个设置更糟**：用户以为自己改了行为。
+        //   现在只留一句说明，并如实说清现状。
         h('div', null,
           h('div', { className: 'dvt-tool-name' }, '悬浮框触发方式'),
-          ...[
-            ['alt-hover', '按住 Alt 时显示（推荐，不干扰日常操作）'],
-            ['hover', '悬浮即显示（鼠标移动时会一直弹框）'],
-            ['click', '点击元素时显示（尚未实现）'],
-          ].map(([value, label]) => h('label', { className: 'dvt-radio', key: value },
-            h('input', {
-              type: 'radio',
-              name: 'dvt-trigger',
-              checked: (state.trigger ?? 'alt-hover') === value,
-              onChange: () => setTrigger(value),
-            }),
-            label))),
+          h('div', { className: 'dvt-hint' },
+            '按住 Alt 悬停显示。目前只实现了这一种触发；直接悬停、点击触发都还没做。')),
 
         // 宿主同步失败时明确提示 —— 否则用户以为规矩生效了，其实没有
         hostSyncError === null ? null : h('div', { className: 'dvt-exp-err' },

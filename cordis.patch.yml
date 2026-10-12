@@ -7,11 +7,11 @@
 - insert:
     - id: dev-tools
       name: dsh-plugin-dev-tools
-      config:
-        # 开发模式的启动初值。真正生效的开关在插件设置页里，状态存浏览器 localStorage
-        #（profile 的 config 写回需要审批、且通常要重启才生效，不适合当交互开关）。
-        enabled: false
-        # 悬浮框触发方式：'alt-hover'（按住 Alt 悬停）| 'hover'（直接悬停）| 'click'（点击元素）
-        trigger: 'alt-hover'
-        # 开发规矩注入范围：'session'（仅当前会话）| 'global'（所有会话）| 'off'
-        ruleScope: 'session'
+      # ⚠ 这里**曾经**有三个配置字段 `enabled` / `trigger` / `ruleScope`，2026-10-12 全删。
+      #   它们不是"暂时没用"，而是**永远不起作用** —— 留着等于给用户一个假旋钮：
+      #     · enabled   —— 真开关在设置页（状态存浏览器 localStorage），这个字段只打过一句日志
+      #     · trigger   —— 宿主半从不读它；设置页里那两个选项（hover / click）根本没实现
+      #     · ruleScope —— 除校验与存值外，全库没有第二处引用
+      #   判据：**界面上承诺了但不生效的配置，比没有这个配置更糟** —— 用户会以为自己调过了。
+      #   所以现在不声明任何配置项（`experienceFile` 仍可用，只是不给默认值）。
+      config: {}
