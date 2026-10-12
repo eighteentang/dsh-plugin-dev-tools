@@ -173,7 +173,7 @@ function logLine(message) {
  * @param {(enabled: boolean, stamp?: number) => boolean} [options.setDevMode] 写开发模式
  * @returns {{ dispose: () => void, port: number }}
  */
-export function startAppControl({ appPath, diagnose, getDevMode, setDevMode }) {
+export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck }) {
   const server = createServer((req, res) => {
     const remote = req.socket.remoteAddress ?? '';
     const origin = String(req.headers.origin ?? '');
@@ -240,6 +240,22 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode }) {
       }
       res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('method not allowed');
+      return;
+    }
+
+    // ── /dev-tools/self-check：「为什么我的改动没生效」自证（只读）──
+    //
+    // 报的是"磁盘上的代码 vs 正在跑的那一份"：进程启动时刻、模块加载路径、
+    // link 还是复制安装、HMR 到底监不监听源码、每个关键文件的哈希有没有变，
+    // 以及进程里已注册的服务清单。判"变没变"用**哈希不用 mtime**。
+    if (url.pathname === '/dev-tools/self-check') {
+      try {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, ...(selfCheck?.() ?? {}) }));
+      } catch (error) {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String(error?.message ?? error) }));
+      }
       return;
     }
 

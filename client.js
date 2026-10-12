@@ -388,6 +388,159 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * 「开发诊断」tab 的内容（2026-10-12 加）。
+     *
+     * 数据**全部来自宿主半的 HTTP 接口** —— 客户端跑在浏览器环境里，
+     * 只有 fetch、没有 fs，读不到插件目录与控制不了进程。
+     *
+     * 分区（按"看一眼就知道要不要重启"的顺序排）：
+     *   ① 结论条    —— 一句话：现在跑的是不是磁盘上那份
+     *   ② 环境      —— 进程启动时刻 / 安装方式 / HMR 监听范围
+     *   ③ 文件      —— 逐个文件的哈希比对（代码变了要重启；数据变了立刻生效）
+     *   ④ 服务      —— 进程里已注册的服务（带边界说明）
+     *   ⑤ 经验库    —— 版本 / 条数 / 索引装配
+     */
+    function DiagnosticsTab() {
+      const [self, setSelf] = React.useState(null);
+      const [exp, setExp] = React.useState(null);
+      const [err, setErr] = React.useState(null);
+      const [at, setAt] = React.useState(null);
+      const [busy, setBusy] = React.useState(false);
+
+      const load = React.useCallback(async () => {
+        setBusy(true);
+        try {
+          const r1 = await fetch(`${CONTROL_BASE}/self-check`);
+          setSelf(await r1.json());
+          const r2 = await fetch(`${CONTROL_BASE}/experience`);
+          setExp(await r2.json());
+          setErr(null);
+        } catch (e) {
+          setErr(String(e?.message ?? e));
+        }
+        setAt(new Date());
+        setBusy(false);
+      }, []);
+      React.useEffect(() => { load(); }, [load]);
+
+      const box = { padding: '10px 12px', borderBottom: '1px solid var(--dvt-line, #2a2a30)' };
+      const h4 = { margin: '0 0 8px', fontSize: 13, fontWeight: 600, opacity: 0.9 };
+      const kv = { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 10px', fontSize: 12, lineHeight: 1.6 };
+      const dim = { opacity: 0.62 };
+      const row = (k, v) => [h('div', { key: k, style: dim }, k), h('div', { key: `${k}-v` }, v)];
+
+      if (self === null) {
+        return h('div', { style: { padding: 12, fontSize: 13 } },
+          err === null
+            ? '正在读取…'
+            : h('div', null,
+              h('div', { style: { color: '#ff6b5a', marginBottom: 6 } }, '读不到宿主控制接口'),
+              h('div', { style: { ...dim, fontSize: 12 } }, err),
+              h('div', { style: { ...dim, fontSize: 12, marginTop: 8 } },
+                '控制接口（8800）可能没启动。宿主半的日志在 ~/.dsh/dev-tools.log。')));
+      }
+
+      const hmr = self.hmr ?? {};
+      const inst = self.install ?? {};
+      const files = Array.isArray(self.files) ? self.files : [];
+      const changed = files.filter((f) => f.changed);
+      const needRestart = files.filter((f) => f.verdict === 'needs-restart');
+      const hotApplied = files.filter((f) => f.verdict === 'applied-immediately');
+      const svc = self.services ?? {};
+
+      return h('div', { style: { fontSize: 13, overflowY: 'auto' } },
+
+        // ① 结论条
+        h('div', {
+          style: {
+            ...box,
+            background: needRestart.length > 0
+              ? 'rgba(255,107,90,.14)'
+              : changed.length > 0 ? 'rgba(255,200,0,.12)' : 'rgba(120,200,120,.10)',
+          },
+        },
+          h('div', { style: { lineHeight: 1.6 } }, self.summary ?? '（宿主没给结论）'),
+          h('div', { style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' } },
+            h('button', {
+              onClick: load,
+              disabled: busy,
+              style: {
+                fontSize: 12, padding: '3px 10px', borderRadius: 4, cursor: busy ? 'default' : 'pointer',
+                border: '1px solid rgba(255,255,255,.22)', background: 'transparent', color: 'inherit',
+              },
+            }, busy ? '刷新中…' : '刷新'),
+            at === null ? null : h('span', { style: { ...dim, fontSize: 11 } },
+              `读于 ${at.toLocaleTimeString()}`))),
+
+        // ② 环境
+        h('div', { style: box },
+          h('div', { style: h4 }, '环境'),
+          h('div', { style: kv },
+            row('宿主启动', self.processStartedAt === null ? '读不到' : new Date(self.processStartedAt).toLocaleString()),
+            row('本模块加载', self.loadedAt === null ? '读不到' : new Date(self.loadedAt).toLocaleString()),
+            row('安装方式', inst.kind === undefined ? '未知'
+              : (inst.kind === 'link'
+                ? h('span', null, 'link（改的就是正在跑的那份）')
+                : h('span', { style: { color: '#ffc800' } }, '复制安装（改开发目录不会生效）'))),
+            row('加载自', h('code', { style: { fontSize: 11, wordBreak: 'break-all' } }, inst.path ?? '?')),
+            row('profile 依赖', self.profileDependency === null ? '读不到' : String(self.profileDependency)),
+            row('热重载', hmr.available !== true
+              ? h('span', { style: dim }, hmr.note ?? '拿不到 hmr 服务')
+              : h('span', { style: hmr.watchesSource ? { color: '#7fd17f' } : { color: '#ffc800' } },
+                hmr.watchesSource ? `监听源码：${(hmr.root ?? []).join(', ')}` : '不监听源码（改 .js 必须重启）'))),
+          hmr.note === undefined ? null : h('div', { style: { ...dim, fontSize: 11, marginTop: 6 } }, hmr.note)),
+
+        // ③ 文件
+        h('div', { style: box },
+          h('div', { style: h4 }, `文件（${changed.length} 个与加载时不同）`),
+          h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+            files.map((f) => h('div', {
+              key: f.file,
+              style: { display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12 },
+            },
+              h('span', {
+                style: {
+                  flex: '0 0 auto', width: 14, textAlign: 'center',
+                  color: f.verdict === 'needs-restart' ? '#ff6b5a'
+                    : f.verdict === 'applied-immediately' ? '#ffc800' : '#7fd17f',
+                },
+              }, f.verdict === 'needs-restart' ? '!' : f.verdict === 'applied-immediately' ? '~' : '·'),
+              h('code', { style: { flex: '1 1 auto', wordBreak: 'break-all' } }, f.file),
+              h('span', { style: { ...dim, flex: '0 0 auto', fontSize: 11 } },
+                f.verdict === 'needs-restart' ? '需重启'
+                  : f.verdict === 'applied-immediately' ? '已生效' : '一致')))),
+          h('div', { style: { ...dim, fontSize: 11, marginTop: 8 } },
+            '判据是**内容哈希**不是修改时间 —— touch 或重写同样内容会刷新 mtime，用 mtime 会假报"未生效"。'),
+          hotApplied.length === 0 ? null : h('div', { style: { ...dim, fontSize: 11, marginTop: 4 } },
+            '标 ~ 的是运行期读盘的数据文件，改完立刻生效、不用重启。')),
+
+        // ④ 服务
+        h('div', { style: box },
+          h('div', { style: h4 }, `进程里的服务（${svc.count ?? 0}）`),
+          svc.available !== true
+            ? h('div', { style: dim }, svc.note ?? '读不到')
+            : h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 6px' } },
+              (svc.services ?? []).map((n) => h('code', {
+                key: n,
+                style: { fontSize: 11, padding: '1px 6px', borderRadius: 3, background: 'rgba(255,255,255,.06)' },
+              }, n))),
+          h('div', { style: { ...dim, fontSize: 11, marginTop: 8 } }, svc.note ?? '')),
+
+        // ⑤ 经验库
+        h('div', { style: box },
+          h('div', { style: h4 }, '经验库'),
+          exp === null
+            ? h('div', { style: dim }, '读不到')
+            : h('div', { style: kv },
+              row('条数', String(exp.actualEntries ?? '?')),
+              row('版本', String(exp.version ?? '?')),
+              row('指纹', String(exp.declaredFingerprint ?? '?')),
+              row('头部一致', exp.headerStale === true
+                ? h('span', { style: { color: '#ffc800' } }, '不一致（头部与实际对不上）')
+                : '一致'))));
+    }
+
     function ensureStyle() {
       if (typeof document === 'undefined') return;
       if (document.getElementById('dev-tools-style') !== null) return;
@@ -1485,6 +1638,55 @@ window.__ModuleLoader__.load({
           order: 90,
           label: '开发工具',
         }, () => h(DevToolsPanel, { runtime })));
+
+        // ── 右侧栏「开发诊断」tab（2026-10-12 加）──────────────────────────────
+        //
+        // 契约照抄隔壁的 dsh-context（它是同一套 seat 的现成范例，注释里写明了纪律）。
+        // 三件要一起注册：
+        //   ① `ctx.sidebarRightTabs.register({ id, kind, title, guide })` 注册 **tab 类型**
+        //      —— `guide` 那一条让它在侧栏的"引导页"里被列出来（用户挑一次才出现，
+        //         跟官方 Files 那个 tab 一样，不是默认就摆在"上下文"旁边）
+        //   ② `sidebar.right.pane.tab`        → 面板本体
+        //   ③ `sidebar.right.pane.tab.title`  → chip 上的图标与标题
+        //
+        // ⚠ 三条纪律（都不是我发明的，是 dsh-context 的注释里明确写的）：
+        //   · `kind` **必须带命名空间** —— 注册表在 kind 与别的注册撞车时会**抛**
+        //   · 这是**可选契约**（只在 0.1.5+ 有）→ 必须走 `ctx.inject(['sidebarRightTabs'])`，
+        //     旧版本上回调不触发、什么都不注册，而不是把插件搞挂
+        //   · 整段包 try/catch —— 一个畸形的注册表应该让"侧栏没有这个 tab"，
+        //     而不是把浏览器搞崩
+        try {
+          ctx.inject(['sidebarRightTabs'], (scoped) => {
+            const tabs = scoped?.sidebarRightTabs;
+            if (tabs === undefined || typeof tabs.register !== 'function') return undefined;
+            const disposers = [];
+            const ownIt = (r) => { if (typeof r === 'function') disposers.push(r); };
+            try {
+              ownIt(tabs.register({
+                id: 'dev-tools-diagnostics',
+                kind: 'dev-tools',
+                title: () => '开发诊断',
+                guide: [{
+                  order: 30, // 排在官方 Files(10) 与 dsh-context(20) 之后
+                  title: () => '开发诊断',
+                  description: () => '现在跑的是哪一份代码、热重载有没有在监听、进程里有哪些服务',
+                }],
+              }));
+              ownIt(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+                name: 'sidebar.right.pane.tab',
+                key: 'dev-tools-diagnostics',
+              }, () => h(DiagnosticsTab, null))));
+              ownIt(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
+                name: 'sidebar.right.pane.tab.title',
+                key: 'dev-tools-diagnostics',
+              }, () => '开发诊断')));
+            } catch {
+              for (const d of disposers) d();
+              return undefined;
+            }
+            return () => { for (const d of disposers) d(); };
+          });
+        } catch { /* 拿不到 sidebarRightTabs 就算了，不影响其它功能 */ }
 
         // 启动时按持久化状态恢复：总开关开着就启用勾选的工具。
         // 放在 inject 之后 —— 工具注册它自己的 slot 时要保证槽位已声明。

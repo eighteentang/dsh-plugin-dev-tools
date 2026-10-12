@@ -39,6 +39,9 @@
 import { startAppControl } from './app-control.js';
 import { installDevRuleSection, isDevModeOn, setDevMode, onDevModeChange, getDevModeStamp } from './dev-rule.js';
 import { installExperienceTool, probeExperienceTool } from './experience-tool.js';
+import { collectSelfCheck, appendSelfCheckLog } from './self-check.js';
+import { homedir } from 'node:os';
+import { join as joinPath } from 'node:path';
 
 /** 手写 Standard Schema（见文件头关于 schemastery 的说明） */
 const ConfigSchema = {
@@ -118,6 +121,10 @@ export function apply(ctx, config) {
       // ⚠ 必须把 stamp 一起传下去 —— 早先写成 `(enabled) => setDevMode(enabled)`，
       // 把时间戳丢了，于是"过期消息保护"形同虚设。
       setDevMode: (enabled, stamp) => setDevMode(enabled, stamp),
+      // 「为什么我的改动没生效」自证（2026-10-12 加）：宿主半收集，走 /dev-tools/self-check 给出去。
+      // 它回答的是"磁盘上的代码，和正在跑的这一份，是不是同一份" —— 用哈希判，不用 mtime
+      // （touch 会刷新 mtime 而内容没变 → 用 mtime 会假报"未生效"）。
+      selfCheck: () => collectSelfCheck(ctx),
       diagnose: () => ({
         devMode: isDevModeOn(),
         devModeStamp: getDevModeStamp(),
@@ -142,6 +149,23 @@ export function apply(ctx, config) {
   // 第二个参数是经验库路径：留空用插件自带的那一份（随插件分发），
   // 也可以在 Config 里指向用户自己的文件。
   const disposeRule = installDevRuleSection(ctx, config.experienceFile);
+
+  // 记一笔"这一份模块是什么时候加载的" —— 这是「双时间戳 + 双哈希」里的加载时刻与加载时哈希。
+  //
+  // ⚠ 这里**只记加载事实**（时间 / 路径 / 安装方式 / 各文件哈希），
+  //   **不记 hmr 与 services** —— 那两个服务在 apply 这一刻可能还没激活，
+  //   记下来会是"拿不到"，反而误导读日志的人。它们由 /dev-tools/self-check 按需现取。
+  {
+    const loaded = collectSelfCheck(null);
+    appendSelfCheckLog({
+      phase: 'apply',
+      loadedAt: loaded.loadedAt,
+      loadedUrl: loaded.loadedUrl,
+      install: loaded.install,
+      profileDependency: loaded.profileDependency,
+      files: loaded.files,
+    }, joinPath(homedir(), '.dsh', 'dev-tools-selfcheck.log'));
+  }
 
   // ── "把新经验记进经验库"的工具（见 experience-tool.js）──────────────
   //
