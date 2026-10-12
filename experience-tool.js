@@ -29,7 +29,7 @@
  *   ② 在 `execute` 里**手工校验入参**（不引入 schema 校验器依赖）
  */
 
-import { appendExperience, firstNonEmpty } from './experience.js';
+import { appendExperience, firstNonEmpty, searchExperience } from './experience.js';
 
 /** 把 DSH 的简写参数格式转成 JSON Schema —— 照抄 `@deepseek-ai/dsh-tools` 的做法 */
 function toJsonSchema(spec) {
@@ -102,6 +102,19 @@ const PARAMETERS = {
  * @param {string} experienceFile 经验库路径
  * @returns {{ dispose: () => void }}
  */
+/** search_experience 的参数（简写；注册时由 toJsonSchema 转真 JSON Schema） */
+const SEARCH_PARAMETERS = {
+  keywords: {
+    type: 'string',
+    required: true,
+    description: '要搜的词。空格分隔多个词时是「任一命中」。例如"剪贴板 复制 静默"。',
+  },
+  limit: {
+    type: 'number',
+    description: '最多返回几条（1~20，默认 5）。',
+  },
+};
+
 export function installExperienceTool(ctx, experienceFile) {
   let tools = ctx?.tools;
   if (tools === undefined) {
@@ -186,8 +199,51 @@ export function installExperienceTool(ctx, experienceFile) {
     return { dispose: () => {} };
   }
 
+  // ── 第二个工具：search_experience（2026-10-12 加）──────────────────────────
+  //
+  // 为什么需要：经验库已经 60 条，而**注入提示词的索引只放标题**（正文要读全文）。
+  // 60 条的时候"靠标题扫"开始不够了 —— 今天为了写一个 skill 我手动翻了好几次，
+  // 每次都要先猜关键词、再一行行看。
+  //
+  // 这个工具让模型**按关键词直接命中正文**，返回编号 + 命中片段 + 去哪读全文。
+  // 它不是"再做一个注入"（那会撑爆预算），而是"按需检索"。
+  let disposeSearch;
+  try {
+    disposeSearch = tools.register({
+      name: 'search_experience',
+      description: [
+        '在插件的开发经验库里**按关键词检索**（标题 / 症状 / 解法 / 细节都搜）。',
+        '',
+        '**什么时候用**：动手前想查"这个症状有没有人踩过"，或者',
+        '提示词里那份经验索引你扫到了觉得相关的一条、想先看它写了什么。',
+        '',
+        '**它不是什么**：不是全文注入 —— 只返回命中位置与**片段**。',
+        '拿到编号后想读完整条目，去读经验库文件里对应的那一节。',
+        '',
+        '**参数**：keywords 是一个词或几个词（空格分隔，多个词是"任一命中"）；',
+        'limit 限制返回条数（默认 5，上限 20）。',
+      ].join('\n'),
+      parameters: toJsonSchema(SEARCH_PARAMETERS),
+      output: {
+        schema: RESULT_SCHEMA,
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      },
+      async execute(args) {
+        const raw = String(args?.keywords ?? '').trim();
+        if (raw === '') return { ok: false, error: 'keywords 必填' };
+        const limit = Number.isFinite(Number(args?.limit)) ? Number(args.limit) : 5;
+        return searchExperience(file, raw, Math.max(1, Math.min(20, limit)));
+      },
+    });
+  } catch (error) {
+    ctx.logger?.warn?.(`dev-tools: 注册"检索经验"工具失败 —— ${String(error?.message ?? error)}`);
+  }
+
   return {
-    dispose: () => { try { dispose(); } catch { /* ignore */ } },
+    dispose: () => {
+      try { dispose(); } catch { /* ignore */ }
+      try { disposeSearch?.(); } catch { /* ignore */ }
+    },
   };
 }
 

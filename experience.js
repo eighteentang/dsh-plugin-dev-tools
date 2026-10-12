@@ -419,6 +419,91 @@ export function buildExperienceText(filePath, budget = INDEX_BUDGET) {
 }
 
 /**
+ * 在经验库里**按关键词检索**（2026-10-12 加）。
+ *
+ * 为什么需要：库已经 60 条，而**注入提示词的索引只放标题**（正文要读全文）。
+ * 到 60 条这个规模，"靠标题扫一眼"开始不够用了 —— 得能按关键词直接命中正文。
+ *
+ * 它不是"再做一个注入"（那会撑爆预算），而是**按需检索**：
+ * 返回编号 + 命中片段 + 去哪读全文，正文仍然不进上下文。
+ *
+ * 判据设计：
+ *   · 多个关键词是 **任一命中**（不是全部），因为查故障时人往往只记得一个词
+ *   · 命中**越多词**的条目排越前（score），同分时**新的排前**
+ *   · 片段取**命中位置附近**的窗口，不是固定取开头 —— 否则命中的词反而看不见
+ *
+ * @param {string} [filePath]
+ * @param {string} keywords 空格分隔的多个词
+ * @param {number} [limit]
+ */
+export function searchExperience(filePath, keywords, limit = 5) {
+  const parsed = parseExperienceFile(filePath);
+  if (!parsed.ok) return { ok: false, error: parsed.error ?? '经验库解析失败' };
+
+  /** 命中字段的权重：命中标题 ≫ 命中细节 */
+  const FIELD_WEIGHT = { 标题: 5, 症状: 3, 解法: 2, 细节: 1 };
+
+  const words = String(keywords ?? '').trim().split(/\s+/).filter((w) => w !== '');
+  if (words.length === 0) return { ok: false, error: 'keywords 不能为空' };
+
+  /** 取命中位置附近的窗口（不是固定取开头） */
+  const snippetAround = (text, word, width = 140) => {
+    const i = text.toLowerCase().indexOf(word.toLowerCase());
+    if (i < 0) return '';
+    const start = Math.max(0, i - Math.floor((width - word.length) / 2));
+    const cut = text.slice(start, start + width).replace(/\s*\n\s*/g, ' ');
+    return (start > 0 ? '…' : '') + cut + (start + width < text.length ? '…' : '');
+  };
+
+  const hits = [];
+  for (const e of parsed.entries) {
+    const fields = { 标题: e.title, 症状: e.symptom, 解法: e.solution, 细节: e.detail };
+    const matched = [];
+    let score = 0;
+    let wordHits = 0;
+    for (const w of words) {
+      const inWhich = Object.keys(fields).filter((k) => String(fields[k] ?? '').toLowerCase().includes(w.toLowerCase()));
+      if (inWhich.length === 0) continue;
+      wordHits += 1;
+      // ⚠ 按**命中的字段**加权，不是按"命中几个词"计数。
+      //   第一版就是只计数，实测出问题：查「代理 git」时 E33 **排到了 E32 前面** ——
+      //   两条都命中 2 个词，平局后按"新的优先"判断，而 E33 只是在细节里顺带提过；
+      //   真正讲 git 代理的 E32 是**标题**命中的。**命中在哪，比命中几次更能说明相关。**
+      score += Math.max(...inWhich.map((k) => FIELD_WEIGHT[k] ?? 1));
+      matched.push(...inWhich);
+    }
+    if (score === 0) continue;
+    const first = words.find((w) => Object.values(fields).some((v) => String(v ?? '').toLowerCase().includes(w.toLowerCase())));
+    const where = Object.keys(fields).find((k) => String(fields[k] ?? '').toLowerCase().includes(String(first).toLowerCase()));
+    hits.push({
+      id: e.id,
+      title: e.title,
+      scope: e.scope ?? 'general',
+      score,
+      wordHits,
+      matchedIn: [...new Set(matched)],
+      snippet: snippetAround(String(fields[where] ?? ''), String(first)),
+    });
+  }
+
+  // 权重高的优先；同分时**新的优先**（经验库的价值偏最近踩的坑）
+  hits.sort((a, b) => (b.score - a.score) || (Number(b.id.slice(1)) - Number(a.id.slice(1))));
+
+  const top = hits.slice(0, limit);
+  return {
+    ok: true,
+    keywords: words,
+    totalHits: hits.length,
+    returned: top.length,
+    hits: top,
+    note: top.length === 0
+      ? `没有条目同时命中这些词：${words.join(' / ')}。换个更短的词试试 —— 经验库里的措辞未必和你一致。`
+      : `还有 ${Math.max(0, hits.length - top.length)} 条命中未返回（要更多就把 limit 调大）。`
+        + '要读完整条目，去经验库文件里找对应编号那一节。',
+  };
+}
+
+/**
  * 给界面/接口用的状态摘要：当前是哪一版、多少条、指纹是什么。
  * 用户靠它判断"我这份是不是旧的、要不要去 GitHub 换新的"。
  */
