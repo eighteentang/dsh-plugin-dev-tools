@@ -65,8 +65,24 @@ export function firstNonEmpty(candidates) {
 }
 
 
-/** 一次装配最多注入多少条 —— 防止库变大后把提示词撑爆 */
-const MAX_ENTRIES = 60;
+/**
+ * ⚠ 这里**曾经**是 `const MAX_ENTRIES = 60;`（"一次装配最多注入多少条"）。
+ *   2026-10-12 删掉，理由有两层，第二层是删的时候才发现的：
+ *
+ *   ① **条数不该是闸门**。真正的闸门是下面那个字符预算（INDEX_BUDGET）——
+ *      实测：4800 字符只装得下约 35 条，而库里已有 59 条通用条目，
+ *      也就是**字符预算先触底**，条数上限根本轮不到。
+ *      而且每轮注入的 token 成本由**字符数**决定，不由条数决定。
+ *
+ *   ② **留着它会引入反向 bug**。装配时 `general.slice(0, MAX_ENTRIES)` 取的是
+ *      **最早**那批，而预算回退留的是这批的**后缀**。所以一旦库里超过 60 条，
+ *      第 61 条以后（也就是最新的）**永远不会进索引** ——
+ *      正好和下面那段注释（2026-10-08）修过的方向反过来：
+ *      "每次记一条新经验，被挤掉的就是它自己"。
+ *
+ *   顺带一提，它同时还被误用在**解析**里（已一并删掉），那才是更凶的那个：
+ *   会让新条目对解析器完全不可见。
+ */
 
 /**
  * 索引的**自身预算**（字符）。
@@ -78,8 +94,37 @@ const MAX_ENTRIES = 60;
  *
  * 取值依据：总量预算 7000（见 verify-injection-size.mjs），自检清单约 1817 字符，
  * 所以索引给 4300，留出约 900 的余量。
+ *
+ * ── 调整记录 ──────────────────────────────────────────────────────────
+ * 4300 → 4600（2026-10-08）。理由不是"撞线了往上抬"，而是**实测出的最小需求**：
+ *
+ *   用 `buildExperienceText(FILE, budget)` 逐档量（那个 budget 参数就是为这件事加的）：
+ *     4300 → 索引 4269，**截掉 2 条**
+ *     4500 → 索引 4423，截掉 1 条
+ *     4600 → 索引 4511，装下全部 38 条；再往上（4700/5300…）长度**不再增长**
+ *
+ *   也就是说 4511 是"装下全部条目"的真实需求，4600 是它 + 一点余量。
+ *   净代价：注入总量 6180 → 6391（**+211 字符，+3.4%**），换来索引里不再丢条目。
+ *
+ *   为什么值得：被截掉的条目在提示词里**彻底消失**，AI 连"有这条"都不知道 ——
+ *   而那两条（E38/E39）恰恰是最新踩出来的坑。上一轮的设计是"装不下就截条并写明"，
+ *   那个机制本身没问题（超长库压测仍然守住预算），只是**当时的常量比实际需求小**。
+ *
+ * 4600 → 4800（2026-10-08，同一天）。这次是**条目数真的变了**（38 → 40 条，
+ * 新记的 E40/E41 都是长条目），不是上次那种"常量比需求小"。同样逐档实测：
+ *
+ *     4600 → 索引 4556，截掉 2 条
+ *     4700 → 索引 4694，截掉 1 条
+ *     4800 → 索引 4776，**装下全部 40 条**；再往上（4900/5300）长度不变
+ *
+ *   总量：索引 4776 + 清单 1817 = 6373，距总预算 7000 还有 627 字符。
+ *
+ * ⚠ **这个常量到天花板了**：40 条就吃掉 4776，而总量只剩 627 余量。
+ *   按"每加一条多 100~140 字符"算，**再记 4~5 条就会再次截条，
+ *   而且余量不够再抬一次**。所以下次撞线时不该再抬预算，
+ *   而要改**装配策略**（例如装不下时优先保留最新条目，而不是按文件顺序截尾）。
  */
-export const INDEX_BUDGET = 4300;
+export const INDEX_BUDGET = 4800;
 
 /**
  * 截断档位：**从宽到紧依次试**，装得下就整份装下。
@@ -190,7 +235,15 @@ export function parseExperienceFile(filePath) {
         detail: pick('细节'),
         scope,
       });
-      if (result.entries.length >= MAX_ENTRIES) break;
+      // ⚠ 这里**曾经**有一句 `if (result.entries.length >= MAX_ENTRIES) break;`
+      //   （2026-10-12 删掉）。它是个真 bug，症状很隐蔽：
+      //   · 解析被截断在 60 条 → 新追加的条目**解析不到**：不计数、不进指纹、
+      //     不进注入索引 —— **写进去了，等于没写**，而工具仍返回成功（静默失效）。
+      //   · 追加时的编号按"解析到的最大号 + 1"算，于是连续追加两条**都是 E61**。
+      //   实测：库里正好 60 条时触发，`条数 +1` 失败、编号不递增。
+      //   上限属于"注入时最多放几条"（见 buildExperienceText），**不属于解析** ——
+      //   解析截断会连锁破坏三件互相印证的东西（条数/指纹/编号），
+      //   所以表面上一切正常，只有校验器知道不对。
     }
 
     result.ok = true;
@@ -213,9 +266,14 @@ export function parseExperienceFile(filePath) {
  * 这样"经验库变长"不会再让注入总量失控。
  *
  * @param {string} [filePath]
+ * @param {number} [budget] 覆盖 INDEX_BUDGET —— **为了可测**（2026-10-08 加）。
+ *   起因：想量"预算设成多少才装得下全部条目"，只能改文件里的常量再跑，
+ *   而把模块复制到临时目录会连带 `EXPERIENCE_FILE` 一起失效（它按 `import.meta.url` 算），
+ *   于是量出来的全是 0，绕了一大圈。参数化之后这件事变成一行调用。
+ *   生产代码不传这个参数，行为与原来完全一致。
  * @returns {string} 没有条目时返回空串（提示词里就不出现这一段）
  */
-export function buildExperienceText(filePath) {
+export function buildExperienceText(filePath, budget = INDEX_BUDGET) {
   const parsed = parseExperienceFile(filePath);
   if (!parsed.ok || parsed.entries.length === 0) return '';
 
@@ -230,7 +288,8 @@ export function buildExperienceText(filePath) {
   if (general.length === 0) return '';
 
   const skipped = parsed.entries.length - general.length;
-  const capped = general.slice(0, MAX_ENTRIES);
+  // 不再按条数截断 —— 闸门只有下面那个字符预算（理由见文件顶部那段说明）
+  const capped = general;
 
   const header = [
     '',
@@ -252,42 +311,56 @@ export function buildExperienceText(filePath) {
     return out;
   };
 
-  // 硬上限（条数）也要说清楚，否则"条目去哪了"没人知道
-  const overCap = general.length > capped.length
-    ? `\n\n  （另有 ${general.length - capped.length} 条未列出 —— 单次至多注入 ${MAX_ENTRIES} 条，见经验库全文）`
-    : '';
-
   // ① 先试各档截断：能装下就**整份装下**（所有条目都还在，只是描述变短）
   //
   // ⚠ 判断的是**最终文本**（含末尾的省略说明）—— 只算正文会漏掉那几十字符。
   //   实测算出 4322 > 4300，被校验器里的"合成超长库压测"抓到过一次。
   for (const tier of CLIP_TIERS) {
     const body = capped.flatMap((entry) => renderEntry(entry, tier));
-    const text = [header, ...body].join('\n') + overCap;
-    if (text.length <= INDEX_BUDGET) return text;
+    const text = [header, ...body].join('\n');
+    if (text.length <= budget) return text;
   }
 
-  // ② 最紧档还是装不下 → 逐条装；每加一条都按"最终文本"判断，放不下就退回
+  // ② 最紧档还是装不下 → 逐条装。**从最新的条目往回装**。
+  //
+  // ⚠ 2026-10-08 改：原来是从**文件开头**往后装（`for (const entry of capped)`），
+  //   而新条目追加在文件末尾 —— 于是**每次记一条新经验，被挤掉的就是它自己**。
+  //   方向反了：经验库的价值恰恰是"记住最近踩的坑"，而老条目多数已经
+  //   内化进代码和文档了。所以现在优先保留**最新**的条目。
+  //
+  //   实现上有两个细节：
+  //     · 装配顺序是"新 → 旧"（好让最该留的先进来），
+  //       但输出前要**改回文件顺序**，否则索引里的编号会倒序、很难读
+  //     · 判断"放不放得下"时用的是**实测最终文本**，
+  //       且要按当前已省略条数算出对应的说明长度 —— 只算正文会漏掉那几十字符
+  //       （这个坑之前踩过：算出 4322 > 4300，被合成压测抓到）
+  //   ⚠ 这里**不能**"逐条从最新往回加、一放不下就 break"（第一版就是那么写的，错的）：
+  //     每条时要按"省略条数"算说明文本的长度，而省略条数取决于**最终留下了多少条** ——
+  //     迭代过程中这个数一直在变，于是最早试的那条（其实是最新的）会被过度保守地拒掉。
+  //     实测症状：留下的是 E22…E118，而 E259（最新的）反而不在索引里。
+  //
+  //     正确做法：**逐个试"连续后缀"**。留下了 k 条就意味着省掉"最早的那些"，
+  //     说明文本的长度随 k 单调变化，于是从 k = 全部 开始试，第一个装得下的就是最长前缀集。
+  //     而"最新的那一批"必然是这个集合的一部分（k 最大时包含它）。
   const tightest = CLIP_TIERS[CLIP_TIERS.length - 1];
-  const body = [];
-  let shown = 0;
-  const assemble = (omitted) => {
-    const note = omitted > 0
-      ? `\n\n  ⚠ 索引已到 ${INDEX_BUDGET} 字符预算：另有 ${omitted} 条未列出 —— 完整列表见经验库全文。`
-      : '';
-    return [header, ...body].join('\n') + note + overCap;
-  };
-  for (const entry of capped) {
-    const rendered = renderEntry(entry, tightest);
-    body.push(...rendered);
-    shown += 1;
-    if (assemble(general.length - shown).length > INDEX_BUDGET) {
-      body.length -= rendered.length;      // 放不下 → 退回这一条
-      shown -= 1;
+  const noteFor = (omitted) => (omitted > 0
+    ? `\n\n  ⚠ 索引已到 ${budget} 字符预算，为保证**最新经验**一定进得来，`
+      + `已省略最早的 ${omitted} 条 —— 完整列表见经验库全文。`
+    : '');
+  const renderAll = (list) => [header, ...list.flatMap((entry) => renderEntry(entry, tightest))].join('\n');
+
+  let kept = capped;
+  for (let k = capped.length; k >= 0; k -= 1) {
+    const suffix = capped.slice(capped.length - k);
+    const omitted = capped.length - k;
+    // 判断的是**最终文本**：正文 + 省略说明
+    if (renderAll(suffix).length + noteFor(omitted).length <= budget) {
+      kept = suffix;
       break;
     }
   }
-  return assemble(general.length - shown);
+  const omittedFinal = capped.length - kept.length;
+  return renderAll(kept) + noteFor(omittedFinal);
 }
 
 /**
