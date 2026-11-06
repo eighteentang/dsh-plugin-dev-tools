@@ -39,6 +39,9 @@
 import { startAppControl } from './app-control.js';
 import { installDevRuleSection, isDevModeOn, setDevMode, onDevModeChange, getDevModeStamp } from './dev-rule.js';
 import { installExperienceTool, probeExperienceTool } from './experience-tool.js';
+// 任务验收与验证闭环（2026-10-14 加）—— 见 acceptance.js 的文件头：
+// 它存在的全部理由是"没有任何入口能把某条验收条件标成已通过"。
+import { DEFAULT_LEDGER as ACCEPTANCE_LEDGER, evaluateAcceptance, installAcceptanceTools, installAcceptanceGate, probeAcceptanceTools } from './acceptance.js';
 // ⚠ 2026-10-12：这一行原本**漏了**，而第 157 行的日志调用了 `firstNonEmpty` →
 //   ReferenceError → apply 中途失败、插件"未激活"，宿主退出后弹故障恢复框。
 //   它定义在 experience.js:60，dev-rule.js / experience-tool.js 都 import 了它。
@@ -184,12 +187,32 @@ export function apply(ctx, config) {
     const syncTool = () => {
       const on = isDevModeOn();
       if (on && current === null) {
-        current = installExperienceTool(scoped, config.experienceFile);
-        scoped.logger?.info?.('dev-tools: 已注册 record_experience 工具');
+        // 两个模块各自注册自己的工具，用一个**组合 dispose** 统一撤下 ——
+        // 免得以后加第三个模块时忘了在清理里补一笔（E3 的同族风险：
+        // "关闭了的东西还在后台跑"）。
+        const experience = installExperienceTool(scoped, config.experienceFile);
+        const acceptance = installAcceptanceTools(scoped, { file: ACCEPTANCE_LEDGER });
+        // 完成前关卡：拦 update_goal(complete)，验收未过不许完成（照抄 memory-lite 的钩子写法）
+        //
+        // ⚠ 2026-11-07 修：这里原来**丢掉了返回值** —— `installAcceptanceGate(...)` 只调用、
+        //   不接。后果是关掉开发模式后，这个钩子**还挂在 ctx 上**继续拦 update_goal
+        //   （E3 同族："关掉的东西还在后台跑"）。现在把它纳入组合 dispose。
+        const gate = installAcceptanceGate(scoped, { file: ACCEPTANCE_LEDGER });
+        current = {
+          dispose: () => {
+            try { experience?.dispose?.(); } catch { /* ignore */ }
+            try { acceptance?.dispose?.(); } catch { /* ignore */ }
+            try { gate?.(); } catch { /* ignore */ }
+          },
+        };
+        scoped.logger?.info?.(
+          'dev-tools: 已注册 record_experience / search_experience'
+          + ' / plan_acceptance / run_verification / acceptance_status',
+        );
       } else if (!on && current !== null) {
         try { current.dispose(); } catch { /* ignore */ }
         current = null;
-        scoped.logger?.info?.('dev-tools: 已撤下 record_experience 工具');
+        scoped.logger?.info?.('dev-tools: 已撤下经验库与验收闭环工具');
       }
     };
 
@@ -243,11 +266,18 @@ export function apply(ctx, config) {
       // 会话日志在 ~/.dsh/sessions 下，判据见 session-digest.js 的文件头。
       // 仓库给插件自己这一份；会话自己的工作区由模块从事件里读出来再补上。
       sessionDigest: (o) => sessionDigest({ ...o, dirs: [PLUGIN_DIR] }),
+      // 验收账本（2026-10-14 加）：只读出口，给校验器和人看"这次任务的验收过没过"。
+      // 写入口**只有** run_verification 真跑命令 —— 这条通道读的那份数据里，
+      // 没有"模型自称已通过"这种字段（见 acceptance.js 的文件头）。
+      acceptanceStatus: (o) => evaluateAcceptance({ ...o, file: ACCEPTANCE_LEDGER }),
       diagnose: () => ({
         devMode: isDevModeOn(),
         devModeStamp: getDevModeStamp(),
         hasCtxGet: typeof ctx.get === 'function',
         tool: probeExperienceTool(ctx, config.experienceFile),
+        // 验收闭环的探测（2026-10-14 加）：同样为了"没注册"和"注册了但没生效"
+        // 能被区分开 —— host logger 桌面不落盘（E7），没有它就只能猜。
+        acceptance: probeAcceptanceTools(ctx, { file: ACCEPTANCE_LEDGER }),
       }),
     });
     log.log('info', `控制接口已请求启动：http://127.0.0.1:${control.port}/dev-tools/`);

@@ -23,7 +23,7 @@
  *   2026-10-12 实测确认：HMR 默认 `root: []`（只监听配置），所以
  *   **改配置会热生效、改源码不会**。把这两类分开报，就不会再互相混淆。
  */
-import { readFileSync, existsSync, statSync, appendFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, appendFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -74,16 +74,37 @@ for (const rel of [...CODE_FILES, ...DATA_FILES]) {
  * 所以 **`import.meta.url` 会指向 link 的真实目标**（开发目录），
  * 而不是 profile 里那个 node_modules 路径。
  * `dsh-hmr` 的 README 也明说"watched module paths use realpathSync() spelling"。
+ *
+ * ⚠ 2026-11-07 修：**"在 node_modules 里"不等于"复制安装"**。
+ *   把 profile 依赖切成 `link:D:/DSH/dev-tools` 之后，pnpm 建的是 **junction**，
+ *   而 DSH 的插件加载器把模块按 **node_modules 路径** import（没有先 realpath），
+ *   于是 `import.meta.url` 仍停在
+ *     …\profiles\desktop\node_modules\dsh-plugin-dev-tools\self-check.js
+ *   原来只看"路径里有没有 profiles/…/node_modules"就判 copy —— 界面于是说
+ *   "复制安装（改开发目录不会生效）"，而**实际上改的就是正在跑的那份**（假信息，比不显示更糟）。
+ *   现在以 **realpath 是否改变** 为准：能解析到别处 = link（junction / symlink），
+ *   解析不到（路径不存在，离线校验器就是这么喂的）= 退回原来的启发式。
  */
 export function installKind(moduleUrl) {
   const p = decodeURIComponent(moduleUrl.replace(/^file:\/+/, '')).split('/').join(sep);
   const inProfileNodeModules = /[\\/]profiles[\\/][^\\/]+[\\/]node_modules[\\/]/.test(p);
+
+  /** 解析链接后的真实路径；路径不存在 / 无权限时返回 null（此时只能靠启发式） */
+  let realPath = null;
+  try { realPath = realpathSync(p); } catch { realPath = null; }
+
+  const viaRealPath = realPath !== null && realPath.toLowerCase() !== p.toLowerCase();
+  const kind = viaRealPath ? 'link' : (inProfileNodeModules ? 'copy' : 'link');
+
   return {
-    kind: inProfileNodeModules ? 'copy' : 'link',
+    kind,
     path: p,
-    why: inProfileNodeModules
-      ? '加载路径在 profile 的 node_modules 里 → 像是**复制**安装（改开发目录不会生效）'
-      : '加载路径不在 profile 的 node_modules 里 → 像是 **link** 安装（改的就是正在跑的那份）',
+    realPath,
+    why: kind === 'link'
+      ? (viaRealPath
+        ? `加载路径是链接，真实位置 ${realPath} —— 改开发目录就是改正在跑的那份`
+        : '加载路径不在 profile 的 node_modules 里 → link 安装（改的就是正在跑的那份）')
+      : '加载路径在 profile 的 node_modules 里、且 realpath 没有指向别处 → 复制安装（改开发目录不会生效）',
   };
 }
 

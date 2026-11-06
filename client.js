@@ -92,7 +92,9 @@ window.__ModuleLoader__.load({
      */
     const REGION_MAP = [
       { slot: 'sidebar.footer.action', name: '侧边栏底部动作区', match: ['footer'],
-        note: '⟳ 重启 / ⏻ 关闭 渲染在这里（在用户名那一行的上方）' },
+        note: '与「插件」「设置」按钮并列；dev-tools 的重启按钮 2026-11-07 已移到会话标题右侧' },
+      { slot: 'conversation.session.header.utilities', name: '会话标题右侧工具区', match: [],
+        note: '标题行最右边一排小图标（在应用打开 / 定时任务 / 下载日志）；dev-tools 的 ⟳ 重启按钮在这里' },
       { slot: 'sidebar.panellist', name: '侧边栏全局面板按钮区', match: [],
         note: '「插件」按钮所在槽位；每个 list id 对应一个 main panel，新按钮加在内置条目旁边' },
       { slot: 'settings.section', name: '设置页', match: [],
@@ -417,6 +419,15 @@ window.__ModuleLoader__.load({
 .dvt-pill[disabled]{opacity:.4;cursor:not-allowed}
 .dvt-pill-icon{font-size:13px;line-height:1}
 .dvt-pill-text{font-size:12px}
+/* 会话标题右侧的「重启」按钮 —— 32×32，与 header utilities 里现有图标同尺寸 */
+.dvt-header-btn{display:inline-flex;align-items:center;justify-content:center;
+  width:32px;height:32px;padding:0;margin:0;border:0;border-radius:var(--dsw-radius-md);
+  background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;
+  transition:background .15s,color .15s}
+.dvt-header-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);
+  color:var(--dsw-alias-label-primary)}
+.dvt-header-btn:disabled{opacity:.5;cursor:default}
+.dvt-header-btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
 `;
 
     /**
@@ -523,7 +534,7 @@ window.__ModuleLoader__.load({
       // ⚠ 必须自己调一次 ensureStyle：本 tab 是**注册即出现**的（不像小工具那样
       //   依赖开发模式开关），而 .dvt-diag-* 全在 BASE_CSS 里 ——
       //   不调的话，开发模式关着时这一页会是没有样式的裸文本，比改之前更糟。
-      //   ensureStyle 是幂等的（按 id 判重），放在组件体里和 FooterAppControls 一致。
+      //   ensureStyle 是幂等的（按 id 判重），放在组件体里和 RestartButton 一致。
       ensureStyle();
       // 会话 id 由 `conversation.view` 座位透传进来 —— ② 要靠它去宿主半查会话日志。
       // 空 props（校验器就是这样渲染的）也不能崩。
@@ -899,97 +910,81 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 侧边栏底部「账号那一行」的重启/关闭。
+     * 会话标题右侧的「重启」按钮（`conversation.session.header.utilities`）。
      *
-     * ⚠ 两个槽位的关系（我一开始搞错了，导致"按钮不见了"）：
+     * ── 为什么放这里（2026-11-07 用户选的）──────────────────────
+     * 官方可用的位置只有三个，都核对过：
+     *   · conversation.session.header.utilities —— list，右上角，需有会话 ← 现在这个
+     *   · conversation.header.leading          —— single，左上角，空着，无会话也显示
+     *   · shell.overlay                        —— frame 浮层，只能"贴"在窗口标题栏上
+     * 选右上的理由：官方 list 槽、replaceRisk=none、和现有 3 个图标同一行。
      *
-     *   用户看到的那一行（`button._8mDnW_trigger`，aria-label「账号菜单」，
-     *   文字「Eighteen🤿」）是 **`settings.launcher`** ——
-     *   由 `dsh-client-ui-settings-account` 的 `AccountMenu` 渲染。
+     * ⚠ 两条走过的死路（别再试）：
+     *   ① 账号下拉菜单（settings.launcher）里加一项 —— 做不到：single 槽位被官方
+     *      AccountMenu 独占，菜单项是组件里写死的数组；重写它会丢"账号 / 联系我们 /
+     *      退出登录"（那些 props 由官方插件闭包提供，外部注册拿不到）。
+     *   ② 窗口标题栏右侧（"编辑"右边）—— 没有槽位：那是 titleBarOverlay 的窗口
+     *      chrome（页面根上的 data-windows-titlebar），插件够不到。
      *
-     *   而 `settings.trigger` 只是它**内部**的一小块（那个 ⚙ 图标）。
-     *   我第一次改的是 trigger，所以遮蔽生效了、但用户看到的是 launcher，
-     *   表现就是"按钮没出现、用户名还在"。
+     * ── 点击之后会发生什么（诚实版）────────────────────────────
+     * DSH **没有对外重启接口**（本轮复核：preload 51 个通道无 restart；应用菜单里的
+     * "重启应用与 Host"被 development 包着，安装版没有）。所以这里只能：
+     *   结束宿主 → 外壳弹恢复框 → 用户在框里点「重启」（约 7 秒）。
+     * 全自动那条路是"外部杀外壳再拉起"，实测约 64 秒、还可能撞单实例锁 —— 不做。
      *
-     * ⚠ 代价（必须知道）：`settings.launcher` 的 ownerProps 里带着
-     *
-     *     openSettings: () => void
-     *
-     *   也就是**"打开设置"的能力是这个槽位自己负责的**。
-     *   顶掉它就必须把这件事一起实现，否则用户进不去设置。
-     *   所以下面渲染的是：**用户名（点击开设置）+ ⟳ + ⏻**，
-     *   而不是只有两个按钮。
+     * 样式走 BASE_CSS 的 .dvt-header-btn（32×32，和 header utilities 里现有图标同尺寸）。
      */
-    /**
-     * 侧边栏底部动作区（`sidebar.footer.action`）里的重启/关闭。
-     *
-     * 这是**加法**（list 槽位，与「插件」按钮和设置并列），
-     * 不会顶掉任何现有功能 —— 与 `SidebarAccountRow` 那条路的关键区别。
-     *
-     * ⚠ 样式写内联：注入 `<style>` 到 document.head 这条路
-     *   **无法从外部验证**（可能被样式隔离），内联至少保证"看得见"。
-     */
-    function FooterAppControls() {
+    function RestartButton() {
+      const [busy, setBusy] = React.useState(false);
       ensureStyle();
-      const [busy, setBusy] = React.useState(null);
 
-      const BTN = {
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        width: '28px', height: '28px', minWidth: '28px', flex: '0 0 auto',
-        padding: '0', margin: '0', borderRadius: '8px',
-        border: '1px solid rgba(139,147,167,.30)',
-        background: 'rgba(139,147,167,.12)',
-        color: '#c8cede', fontFamily: 'inherit', fontSize: '14px',
-        lineHeight: '1', cursor: 'pointer',
-      };
-
-      const run = (action, confirmText, pendingText) => {
-        if (!globalThis.confirm(confirmText)) return;
-        setBusy(action);
-        fetch(`${CONTROL_BASE}/${action}`, {
+      const restart = () => {
+        const ok = globalThis.confirm(
+          '重启 DSH？\n\n'
+          + '接下来会发生什么：\n'
+          + '  1. 宿主进程结束，DSH 会弹出恢复框（这不是报错，是正常流程）\n'
+          + '  2. 在框里选「重启」→ 约 7 秒回来\n'
+          + '  3. 不要手动去点桌面图标 —— 会撞上单实例锁\n\n'
+          + '为什么不能全自动：DSH 没有对外的重启接口，任何结束宿主的操作都要经过那个框。',
+        );
+        if (!ok) return;
+        setBusy(true);
+        fetch(`${CONTROL_BASE}/quit`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
         })
           .then((res) => res.json())
           .then((result) => {
             if (result?.ok !== true) throw new Error(result?.error ?? '返回异常');
-            // 界面随后会被进程退出带下去，不需要复位 busy
-            if (pendingText !== null) globalThis.alert(pendingText);
+            // 随后宿主就会退出、界面被带走 —— 不需要复位 busy
           })
           .catch((error) => {
-            setBusy(null);
-            globalThis.alert(`操作失败：${error?.message ?? error}\n\n宿主控制接口（${CONTROL_PORT}）可能没启动。`);
+            setBusy(false);
+            globalThis.alert(
+              `重启失败：${error?.message ?? error}\n\n宿主控制接口（${CONTROL_PORT}）可能没启动。`,
+            );
           });
       };
 
-      return h('div', {
-        className: 'dvt-footer-controls',
-        style: {
-          display: 'inline-flex', flexDirection: 'row', alignItems: 'center',
-          gap: '4px', flex: '0 0 auto',
-        },
+      return h('button', {
+        type: 'button',
+        className: 'dvt-header-btn',
+        title: '重启 DSH（结束后在恢复框里选「重启」）',
+        'aria-label': '重启 DSH',
+        disabled: busy,
+        onClick: restart,
       },
-        h('button', {
-          type: 'button',
-          className: 'dvt-icon-btn',
-          // 骷髅头 = "弄死它"（用户选的图标）
-          style: { ...BTN, fontSize: '15px' },
-          title: '结束 DSH 宿主进程 —— 随后 DSH 会弹出恢复框，在那里选「重启」或「退出」',
-          'aria-label': '结束进程',
-          disabled: busy !== null,
-          onClick: () => run('quit',
-            '结束 DSH 宿主进程？\n\n'
-            + '接下来会发生什么：\n'
-            + '  1. DSH 会弹出**恢复框**（这不是报错，是正常流程 —— '
-            + '外壳把"宿主终止"一律当异常处理）\n'
-            + '  2. 在那个框里选：\n'
-            + '       · 「重启」→ 干净的自动重启（约 7 秒）\n'
-            + '       · 「退出」→ 关闭应用\n'
-            + '  3. 不要手动去点桌面图标 —— 那会撞上单实例锁\n\n'
-            + '为什么不做成一个直接重启的按钮：DSH 没有对外的重启接口，'
-            + '自己杀进程再拉起要慢 9 倍（约 64 秒），不如用官方的恢复框。',
-            '正在结束进程…\n\nDSH 会弹出恢复框，在那里选「重启」或「退出」。'),
-        }, busy === 'quit' ? '…' : '💀'));
+        h('svg', {
+          width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true',
+        },
+          h('path', {
+            d: 'M13.2 8A5.2 5.2 0 1 1 11.6 4.36',
+            stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round',
+          }),
+          h('path', {
+            d: 'M13.2 2.4v3.4H9.8',
+            stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round',
+          })));
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1020,43 +1015,23 @@ window.__ModuleLoader__.load({
      */
     const TOOLS = [
       {
-        id: 'app-control',
-        name: '结束进程按钮（💀）',
-        summary: '在侧边栏底部加一个 💀 按钮：结束 DSH 宿主进程，然后由 DSH 自己的恢复框选择重启或退出。',
-        usage: '点 💀 → 确认 → DSH 弹出恢复框 → 在那里选「重启」（干净重启，约 7 秒）或「退出」。'
-             + '那个框不是报错，是正常流程：DSH 外壳把"宿主进程终止"一律当异常处理，'
-             + '所以任何结束宿主的操作都会经过它。'
-             + '关掉此工具会把按钮从界面摘掉（不是隐藏）。',
+        id: 'restart',
+        name: '重启按钮（⟳）',
+        summary: '在会话标题右侧加一个 ⟳ 按钮：结束 DSH 宿主进程，再由 DSH 自己的恢复框完成重启。',
+        usage: '点 ⟳ → 确认 → DSH 弹出恢复框 → 在那里选「重启」（约 7 秒）。'
+             + '那个框不是报错，是正常流程：外壳把"宿主终止"一律当异常处理。'
+             + '**不能一键全自动**：DSH 没有对外的重启接口（已复核：preload 51 个通道里没有 restart，'
+             + '应用菜单里的重启项只在开发版存在）。关掉此工具会把按钮从界面摘掉（不是隐藏）。',
         defaultEnabled: true,
 
         enable(host) {
           const { ctx } = host;
-          // ══════════════════════════════════════════════════════════════
-          // ⚠ 已回滚到 `sidebar.footer.action`（2026-09-26）
-          //
-          // 试过把按钮放进侧边栏底部「账号那一行」（`settings.launcher`），
-          // 用 `priority: -1` 遮蔽它 —— **遮蔽确实生效了，但代价不可接受**：
-          //
-          //   那个槽位是 `dsh-client-ui-settings-account` 的 `AccountMenu`，
-          //   它不只是"头像 + 用户名"，还**拥有账号上拉菜单**。
-          //   顶掉它之后：用户名没了、上拉菜单没了，只剩我实现的"打开设置"。
-          //   → 功能被削掉了，这比"按钮位置不好"严重得多。
-          //
-          // **教训**：`single` 槽位可以用 priority 遮蔽（机制是真的），
-          // 但**先要搞清那个槽位的占据者到底负责什么**。
-          // 看到 `ownerProps` 里有 `openSettings` 这种"能力型"字段，
-          // 就说明它不是一个装饰位，而是一个**功能件** —— 遮蔽它 = 自己重写那个功能。
-          //
-          // 那个 `SidebarAccountRow` 组件已于 2026-10-12 删除（未使用，且与在用的
-          // run() 逐字节相同）。以后真要做账号菜单替换，先按上面的判据把
-          // AccountMenu 的行为补全（上拉菜单里的每一项），再谈替换。
-          // ══════════════════════════════════════════════════════════════
-          return ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-            name: 'sidebar.footer.action',
-            id: 'dev-tools-app-controls',
+          return ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+            name: 'conversation.session.header.utilities',
+            id: 'dev-tools-restart',
             order: 10,
-            label: () => '应用控制',
-          }, FooterAppControls));
+            label: () => '重启 DSH',
+          }, RestartButton));
         },
       },
 

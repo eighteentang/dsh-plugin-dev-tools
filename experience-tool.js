@@ -31,8 +31,14 @@
 
 import { appendExperience, firstNonEmpty, searchExperience } from './experience.js';
 
-/** 把 DSH 的简写参数格式转成 JSON Schema —— 照抄 `@deepseek-ai/dsh-tools` 的做法 */
-function toJsonSchema(spec) {
+/**
+ * 把 DSH 的简写参数格式转成 JSON Schema —— 照抄 `@deepseek-ai/dsh-tools` 的做法
+ *
+ * ⚠ 导出它是为了让 acceptance.js 复用同一份实现：这个转换**规则只有一套**，
+ *   复制第二份的话，哪天改了简写格式就会出现"一个工具好好的、另一个静默报
+ *   invalid schema"（E19 的同一个道理：别靠两份手写规则保持同步）。
+ */
+export function toJsonSchema(spec) {
   const properties = {};
   const required = [];
   for (const [key, decl] of Object.entries(spec)) {

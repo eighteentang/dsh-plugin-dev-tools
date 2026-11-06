@@ -172,9 +172,10 @@ function logLine(message) {
  * @param {() => boolean} [options.getDevMode] 读开发模式（内存态）
  * @param {(enabled: boolean, stamp?: number) => boolean} [options.setDevMode] 写开发模式
  * @param {(opts: object) => object} [options.sessionDigest] 会话摘要（这次会话出了什么问题 + 最近改了什么）
+ * @param {(opts: object) => object} [options.acceptanceStatus] 验收账本状态（只读；这次任务的验收过没过）
  * @returns {{ dispose: () => void, port: number }}
  */
-export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck, logTail, sessionDigest }) {
+export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck, logTail, sessionDigest, acceptanceStatus }) {
   /**
    * ⚠ 一个请求里的任何异常都**不许逃出去**（2026-10-12 实测的代价）。
    *
@@ -325,6 +326,37 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
       } catch (error) {
         const reason = String(error?.message ?? error);
         logLine(`会话摘要失败（已返回 JSON 错误，不影响宿主）：${reason}`);
+        body = JSON.stringify({ ok: false, error: reason });
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(body);
+      return;
+    }
+
+    // ── /dev-tools/acceptance：验收账本状态（只读）──
+    //
+    // 为什么需要它：验收闭环的三个工具只在**开发模式开着**时注册，
+    // 而"这次任务的验收到底过没过"在会话之外也要能问 —— 校验器要问，
+    // 人也想直接看一眼。所以宿主开一条只读通道。
+    //
+    // ⚠ 它**只能读**：写账本的唯一入口是 `run_verification`（真跑一条命令、
+    //   记真实退出码）。这条路由刻意不接受"把某条标成 passed"之类的参数 ——
+    //   验收模块里根本没有那个入口，所以这里也不可能有。
+    // ⚠ 同 session-digest：先把 body 算完、再写头（见 handle 上面的长注释）。
+    if (url.pathname === '/dev-tools/acceptance') {
+      let body;
+      try {
+        if (typeof acceptanceStatus !== 'function') {
+          body = JSON.stringify({ ok: false, error: '宿主没提供验收账本通道' });
+        } else {
+          body = JSON.stringify(acceptanceStatus({
+            task: url.searchParams.get('task') ?? '',
+            preflight: url.searchParams.get('preflight') === '1',
+          }));
+        }
+      } catch (error) {
+        const reason = String(error?.message ?? error);
+        logLine(`读验收账本失败（已返回 JSON 错误，不影响宿主）：${reason}`);
         body = JSON.stringify({ ok: false, error: reason });
       }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });

@@ -4,6 +4,7 @@
 *.backup
 _tmp-*
 *.tmp
+tmp-*
 
 # 日志
 *.log
@@ -17,3 +18,6 @@ Thumbs.db
 # 依赖（这个插件没有依赖，但防止误提交）
 node_modules/
 pnpm-lock.yaml
+
+# 工作区自己的记忆库（不是插件内容）
+.dsh-memory/
