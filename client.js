@@ -372,6 +372,17 @@ window.__ModuleLoader__.load({
 .dvt-exp-val.mono{font-family:ui-monospace,Consolas,monospace;letter-spacing:.3px}
 .dvt-exp-warn{font-size:12px;line-height:1.6;color:var(--dsw-alias-state-warn-primary)}
 .dvt-exp-err{font-size:12px;line-height:1.6;color:var(--dsw-alias-state-error-primary)}
+/* 经验库搜索（P2-2）：输入框 + 命中列表 */
+.dvt-exp-search{display:flex;gap:8px;align-items:center;margin-top:2px}
+.dvt-exp-input{flex:1 1 auto;min-width:0;height:28px;padding:0 10px;box-sizing:border-box;
+  border-radius:var(--dsw-radius-sm);border:.5px solid var(--dsw-alias-border-l2);
+  background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px}
+.dvt-exp-input:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+.dvt-exp-hits{display:flex;flex-direction:column;gap:6px}
+.dvt-exp-hit{padding:7px 9px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2)}
+.dvt-exp-hit-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.dvt-exp-hit-snippet{margin-top:3px;font-size:11.5px;line-height:1.5;word-break:break-all;
+  color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-mono,ui-monospace,Consolas,monospace)}
 .dvt-refresh{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;
   height:28px;padding:0 12px;border-radius:var(--dsw-radius-sm);cursor:pointer;
   border:.5px solid var(--dsw-alias-border-l2);background:transparent;
@@ -499,6 +510,33 @@ window.__ModuleLoader__.load({
       syncDevModeToHost(enabled, onResult, 6);   // 6 次 × 700ms ≈ 4 秒窗口
     }
 
+    /**
+     * 对账开关状态（P0-4，2026-11-07 加）。
+     *
+     * 背景：宿主每次重新 apply（禁用→启用插件、profile 重载）都会把内存态清成"关"，
+     * 而客户端只在**页面加载时**同步一次 —— 于是界面显示"开"、宿主是"关"，
+     * 注入段落和工具**静默消失**（本轮实测又踩了一次）。
+     *
+     * 做法：隔一段时间 / 窗口重新获得焦点时 GET `/dev-mode`，与本地 master 比对，
+     * 不一致就按本地值重发（带新时间戳，宿主的时间戳保护会接受）。
+     * 失败只 warn：对账是兜底，不能因为它把面板搞坏。
+     */
+    function reconcileDevMode() {
+      const saved = STORE.read();
+      fetch(`${CONTROL_BASE}/dev-mode`, { cache: 'no-store' })
+        .then((res) => (res.ok === true ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+        .then((state) => {
+          if (state?.enabled === saved.master) return;
+          syncDevModeToHost(saved.master, (ok, reason) => {
+            if (!ok) console.warn(`[dev-tools] 对账开关失败：${reason ?? '未知原因'}`);
+          });
+        })
+        .catch((error) => {
+          // 宿主没起来（或正在重载）是常态，不弹窗、不打扰
+          console.warn(`[dev-tools] 读宿主开关失败：${error?.message ?? error}`);
+        });
+    }
+
     /** 读经验库状态（版本 / 条数 / 是否过期）。读不到时返回带 error 的对象。 */
     async function fetchExperienceStatus() {
       try {
@@ -550,6 +588,8 @@ window.__ModuleLoader__.load({
       const [err, setErr] = React.useState(null);
       const [at, setAt] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+      /** 「复制诊断 JSON」的 2 秒反馈（P2-1） */
+      const [copyDone, setCopyDone] = React.useState(false);
 
       const load = React.useCallback(async () => {
         setBusy(true);
@@ -592,12 +632,49 @@ window.__ModuleLoader__.load({
         className: 'dvt-diag-card',
         ...(toneOfCard === undefined ? null : { 'data-tone': toneOfCard }),
       }, Array.isArray(children) ? children : [children]);
+
+      /**
+       * 复制整页诊断 JSON（P2-1）。
+       * 为什么值得：出问题时把这一坨贴给 AI/维护者，比截图或手抄强得多；
+       * 剪贴板不可用时打印到控制台（不假装成功）。
+       */
+      const copyAll = () => {
+        let text = '';
+        try {
+          text = JSON.stringify({
+            exportedAt: new Date().toISOString(),
+            self, exp, log, digest,
+          }, null, 2);
+        } catch (error) {
+          text = String(self ?? error);
+        }
+        const done = () => {
+          setCopyDone(true);
+          setTimeout(() => setCopyDone(false), 2000);
+        };
+        const fallback = () => {
+          console.log(`[dev-tools] 诊断 JSON：\n${text}`);
+          try { globalThis.alert('剪贴板不可用 —— 诊断 JSON 已打印到控制台（F12）'); } catch { /* ignore */ }
+        };
+        try {
+          const clip = globalThis.navigator?.clipboard;
+          if (typeof clip?.writeText === 'function') {
+            clip.writeText(text).then(done).catch(fallback);
+            return;
+          }
+        } catch { /* 落到 fallback */ }
+        fallback();
+      };
+
       const head = () => h('header', { className: 'dvt-diag-head' },
         h('div', null,
           h('h2', { className: 'dvt-diag-title' }, '开发诊断'),
           h('p', { className: 'dvt-diag-sub' }, '正在跑的这一份，和磁盘上那一份是不是同一个')),
         h('div', { className: 'dvt-diag-actions' },
           at === null ? null : h('span', { className: 'dvt-diag-time' }, `读于 ${at.toLocaleTimeString()}`),
+          h('button', {
+            className: 'dvt-diag-btn', type: 'button', onClick: copyAll, disabled: self === null,
+          }, copyDone ? '已复制' : '复制诊断 JSON'),
           h('button', {
             className: 'dvt-diag-btn', type: 'button', onClick: load, disabled: busy,
           }, busy ? '刷新中…' : '刷新')));
@@ -1682,6 +1759,10 @@ window.__ModuleLoader__.load({
     function ExperienceBlock() {
       const [status, setStatus] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+      /** P2-2：按关键词检索经验库（宿主提供只读接口） */
+      const [q, setQ] = React.useState('');
+      const [results, setResults] = React.useState(null);
+      const [searching, setSearching] = React.useState(false);
 
       const load = React.useCallback(() => {
         setBusy(true);
@@ -1692,6 +1773,17 @@ window.__ModuleLoader__.load({
       }, []);
 
       React.useEffect(() => { load(); }, [load]);
+
+      const doSearch = () => {
+        const text = q.trim();
+        if (text === '') { setResults(null); return; }
+        setSearching(true);
+        fetch(`${CONTROL_BASE}/experience/search?q=${encodeURIComponent(text)}&limit=5`, { cache: 'no-store' })
+          .then((res) => res.json())
+          .then((next) => setResults(next))
+          .catch((error) => setResults({ ok: false, error: String(error?.message ?? error) }))
+          .finally(() => setSearching(false));
+      };
 
       const refreshBtn = h('button', {
         className: 'dvt-refresh',
@@ -1732,7 +1824,13 @@ window.__ModuleLoader__.load({
           row('版本', status.version ?? '（文件里没有版本号）'),
           row('条数', `${status.actualEntries} 条`),
           row('更新于', status.updatedAt ?? '（未标注）'),
-          row('指纹', status.computedFingerprint ?? '—', true)),
+          row('指纹', status.computedFingerprint ?? '—', true),
+          // P1-1：把"注入索引"的真实形态报出来 —— 用户常误以为每条都带描述
+          status.index === undefined ? null : row(
+            '注入索引',
+            `${status.index.described} / ${status.index.entries} 条带描述 · `
+            + `${status.index.chars} / ${status.index.budget} 字符`,
+          )),
 
         // 头部声明与实际内容不符 —— 通常是有人加了条目但忘了更新头部。
         // 这不是错误，但值得提醒：用户靠头部判断版本，头部不准就判断不准。
@@ -1743,6 +1841,28 @@ window.__ModuleLoader__.load({
               + `实际 ${status.actualEntries} 条 / ${status.computedFingerprint}）。`
               + '如果你改过条目，记得更新顶部注释里的 entries 与 fingerprint。')
           : null,
+
+        // P2-2：不开对话也能查库（结果只给编号 + 命中片段，全文仍去文件里读）
+        h('div', { className: 'dvt-exp-search' },
+          h('input', {
+            className: 'dvt-exp-input',
+            placeholder: '搜经验库（空格分隔多个词，任一命中）',
+            value: q,
+            onChange: (e) => setQ(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Enter') doSearch(); },
+            'aria-label': '搜索开发经验库',
+          }),
+          h('button', { type: 'button', className: 'dvt-refresh', disabled: searching, onClick: doSearch },
+            searching ? '搜索中…' : '搜索')),
+
+        results === null ? null : (results.ok !== true
+          ? h('div', { className: 'dvt-exp-err' }, results.error ?? '搜索失败')
+          : ((results.hits ?? []).length === 0
+            ? h('div', { className: 'dvt-exp-key' }, results.note ?? '没有命中')
+            : h('div', { className: 'dvt-exp-hits' },
+                results.hits.map((hit) => h('div', { key: hit.id, className: 'dvt-exp-hit' },
+                  h('div', { className: 'dvt-exp-hit-title' }, `${hit.id} ${hit.title}`),
+                  h('div', { className: 'dvt-exp-hit-snippet' }, hit.snippet ?? '')))))),
 
         h('div', { className: 'dvt-exp-key' },
           '更新方法：去 GitHub 下载最新的「经验库.md」，直接替换插件文件夹里的',
@@ -1922,8 +2042,25 @@ window.__ModuleLoader__.load({
           if (!ok) console.error(`[dev-tools] 启动同步开关状态失败：${reason ?? '未知原因'}`);
         });
 
+        // ── 开关对账（P0-4）：宿主重载会把内存态清掉，客户端负责把它拉回来 ──
+        //
+        // 30 秒一次 + 窗口重新获得焦点时立即对账；失败只 console.warn。
+        // `.unref?.()` 是为了在 Node 校验环境里别让这个定时器把进程钉住。
+        const reconcileTimer = setInterval(reconcileDevMode, 30000);
+        try { reconcileTimer?.unref?.(); } catch { /* ignore */ }
+        const doc = globalThis.document;
+        const win = globalThis.window;
+        const onVisibility = () => { if (doc?.visibilityState === 'visible') reconcileDevMode(); };
+        try { doc?.addEventListener?.('visibilitychange', onVisibility); } catch { /* ignore */ }
+        try { win?.addEventListener?.('focus', reconcileDevMode); } catch { /* ignore */ }
+
         // 插件卸载时彻底清理，避免留下监听器
-        ctx.effect(() => () => runtime.disposeAll(), 'dev-tools: 停用所有小工具');
+        ctx.effect(() => () => {
+          clearInterval(reconcileTimer);
+          try { doc?.removeEventListener?.('visibilitychange', onVisibility); } catch { /* ignore */ }
+          try { win?.removeEventListener?.('focus', reconcileDevMode); } catch { /* ignore */ }
+          runtime.disposeAll();
+        }, 'dev-tools: 停用所有小工具');
       },
     };
   },

@@ -57,7 +57,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { experienceStatus } from './experience.js';
+import { experienceStatus, indexStats, searchExperience, firstNonEmpty, EXPERIENCE_FILE } from './experience.js';
 
 /**
  * 开发工具箱用 8800，与 QQ 插件的 8799 错开 —— 两个插件可以同时存在，
@@ -175,7 +175,7 @@ function logLine(message) {
  * @param {(opts: object) => object} [options.acceptanceStatus] 验收账本状态（只读；这次任务的验收过没过）
  * @returns {{ dispose: () => void, port: number }}
  */
-export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck, logTail, sessionDigest, acceptanceStatus }) {
+export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, selfCheck, logTail, sessionDigest, acceptanceStatus, experienceFile }) {
   /**
    * ⚠ 一个请求里的任何异常都**不许逃出去**（2026-10-12 实测的代价）。
    *
@@ -188,17 +188,47 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
    *   ① 每条路由「先把 body 算完、再写头」（见 /log、/self-check、/requirement-template）
    *   ② 下面那个外层兜底 —— 保证再也不会因为一个请求把宿主带走
    */
+  /**
+   * 允许的页面来源（CORS 白名单）。
+   *
+   * ⚠ 不能"回显任意 Origin"：浏览器里**任何网页**都能对本机端口发简单请求，
+   * 回显 Origin 等于把 `/quit`（结束宿主）和 `/self-check`（本机路径、日志）
+   * 交给随便一个恶意页面。经验库 E88 还记了一笔：桌面端的 Origin 是
+   * `dsh-app://app`，**不是** `http://127.0.0.1:63077`（那是浏览器直开 GUI），
+   * 所以白名单必须同时放行这两种，否则桌面端会整片 403、看起来像"插件消失"。
+   */
+  const ALLOWED_ORIGIN = [
+    /^dsh-app:\/\/[^/]+$/i,                                   // 桌面端（Electron 标准 scheme）
+    /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i,  // 浏览器直开 Web GUI
+  ];
+  /** 被拒来源只记一次（避免刷屏）；上限 50 条，防被构造的 Origin 撑爆内存 */
+  const rejectedOrigins = new Set();
+
   const handle = (req, res) => {
     const remote = req.socket.remoteAddress ?? '';
     const origin = String(req.headers.origin ?? '');
     const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
 
-    // 回显 Origin，让浏览器端的 fetch 不被 CORS 拦（不带凭证、只发简单请求）
+    // 没有 Origin（curl / 脚本）→ 交给下面的回环校验判；
+    // 有 Origin 就必须在白名单里，否则 403 —— **连 OPTIONS 也拒**，
+    // 否则恶意页面的预检会被我们放行。
+    const originAllowed = origin === '' || ALLOWED_ORIGIN.some((re) => re.test(origin));
+    if (!originAllowed) {
+      if (!rejectedOrigins.has(origin) && rejectedOrigins.size < 50) {
+        rejectedOrigins.add(origin);
+        logLine(`拒绝来源 ${origin}（不在 CORS 白名单）`);
+      }
+      res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: 'origin not allowed' }));
+      return;
+    }
+
+    // 只在来源被放行时回显 Origin（让浏览器端的 fetch 不被 CORS 拦）
     if (origin !== '') {
       res.setHeader('access-control-allow-origin', origin);
       res.setHeader('vary', 'origin');
     }
-    res.setHeader('access-control-allow-methods', 'POST, OPTIONS');
+    res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
     res.setHeader('access-control-allow-headers', 'content-type');
 
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
@@ -368,9 +398,41 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
     //
     // 设置页用它显示"你这份经验库是哪一版、多少条、头部是否与实际一致"。
     // 用户靠这个判断要不要去 GitHub 换一份新的。
+    // 2026-11-07 加 `index`：把"注入提示词的那份索引"的体量与形态也报出来 ——
+    // 否则用户只看到"89 条"，不知道其中只有最近几条带症状/解法。
     if (url.pathname === '/dev-tools/experience') {
+      let body;
+      try {
+        body = JSON.stringify({ ...experienceStatus(firstNonEmpty([experienceFile])), index: indexStats(firstNonEmpty([experienceFile])) });
+      } catch (error) {
+        const reason = String(error?.message ?? error);
+        logLine(`读经验库状态失败（已返回 JSON 错误，不影响宿主）：${reason}`);
+        body = JSON.stringify({ ok: false, error: reason });
+      }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(experienceStatus()));
+      res.end(body);
+      return;
+    }
+
+    // ── /dev-tools/experience/search：按关键词检索经验库（只读）──
+    //
+    // 为什么由宿主提供：客户端半没有 fs，读不到经验库文件；
+    // 而"不开对话也能查库"是设置页的合理需求（P2-2）。
+    // ⚠ 纯只读：不写文件、不改变任何状态。
+    if (url.pathname === '/dev-tools/experience/search') {
+      let body;
+      try {
+        const q = url.searchParams.get('q') ?? '';
+        const rawLimit = Number(url.searchParams.get('limit') ?? 5);
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(20, rawLimit)) : 5;
+        body = JSON.stringify(searchExperience(firstNonEmpty([experienceFile]), q, limit));
+      } catch (error) {
+        const reason = String(error?.message ?? error);
+        logLine(`经验库检索失败（已返回 JSON 错误，不影响宿主）：${reason}`);
+        body = JSON.stringify({ ok: false, error: reason });
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(body);
       return;
     }
 
@@ -413,6 +475,16 @@ export function startAppControl({ appPath, diagnose, getDevMode, setDevMode, sel
       }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    // ── /dev-tools/ping：存活探针（GET 与 POST 都认）──
+    //
+    // ⚠ 2026-11-07 修：原来 ping 只在 POST 分支里，`GET /dev-tools/ping` 会 404 ——
+    //   而"ping 一下看宿主活没活"是最自然的用法，报 404 会被误读成"宿主没起来"。
+    if (url.pathname === '/dev-tools/ping') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, pid: process.pid, appPath }));
       return;
     }
 

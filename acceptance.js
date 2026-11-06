@@ -352,10 +352,13 @@ export function evaluateAcceptance({ file = DEFAULT_LEDGER, task = '', preflight
   };
 
   // ── 任务级缺口：条件之外的、"改了但没被任何条件覆盖"的文件 ──
+  // ⚠ 2026-11-07：路径比较**大小写不敏感**（Windows 上 D:\Foo 与 d:\foo 是同一个，
+  //   而 startsWith 区分大小写 → 明明覆盖了却报"未覆盖"）。
+  const normPath = (p) => resolve(p).toLowerCase();
   const changedOverall = collectChangedSince(found.runs.length > 0 ? found.runs[found.runs.length - 1].cwd : process.cwd(), found.startedAt, { ledgerFile: file, limit: 200 });
-  const coveredRoots = criteria.flatMap((c) => c.covers).map((p) => resolve(p));
+  const coveredRoots = criteria.flatMap((c) => c.covers).map(normPath);
   const uncoveredChanges = changedOverall.filter(
-    (path) => !coveredRoots.some((c) => path === c || path.startsWith(c.endsWith(sep) ? c : `${c}${sep}`)),
+    (path) => !coveredRoots.some((c) => normPath(path) === c || normPath(path).startsWith(c.endsWith(sep) ? c : `${c}${sep}`)),
   );
 
   // ── 人工条件：**不算缺口，但不能消失** ──────────────────────────
@@ -433,7 +436,7 @@ export function evaluateAcceptance({ file = DEFAULT_LEDGER, task = '', preflight
 // ─────────────────────────────────────────────────────────────
 
 /** 登记（或覆盖）一个任务的目标与验收条件 */
-export function planAcceptance({ file = DEFAULT_LEDGER, task = '', goal = '', criteria = [] } = {}) {
+export function planAcceptance({ file = DEFAULT_LEDGER, task = '', goal = '', goalId = '', criteria = [] } = {}) {
   const name = String(task ?? '').trim();
   if (name === '') return { ok: false, error: 'task 必填（一句话任务名）' };
   const list = Array.isArray(criteria) ? criteria : [];
@@ -458,6 +461,9 @@ export function planAcceptance({ file = DEFAULT_LEDGER, task = '', goal = '', cr
   const task_ = findTask(doc, name, { create: true });
   if (task_ === null) return { ok: false, error: '无法创建任务' };
   task_.goal = String(goal ?? '').trim();
+  // 2026-11-07 加（P0-3）：把 DSH 的 goal_id 绑到任务上 —— update_goal 的入参里
+  // 有 goal_id，关卡据此挑任务；没有它就只能猜"最近登记的那个"，并行目标会挑错。
+  task_.goalId = String(goalId ?? '').trim();
   task_.startedAt = nowIso();
   task_.criteria = normalized;
   // 覆盖计划即视为新一轮：旧执行记录不再对得上，清掉（宁可重跑，不可复用错证据）
@@ -557,6 +563,11 @@ export function runVerification({
 const PLAN_PARAMS = {
   task: { type: 'string', required: true, description: '一句话任务名，后面 run/status 都用它来找' },
   goal: { type: 'string', description: '这次要达到什么 —— 一句话，写结果不写手段' },
+  goalId: {
+    type: 'string',
+    description: '可选：DSH 目标的 id（update_goal 的 goal_id）。填了之后完成前关卡按它挑任务，'
+      + '并行推进多个目标时不会拿错；不填则关卡退回"最近登记的那个任务"。',
+  },
   criteria: {
     type: 'array',
     required: true,
@@ -829,10 +840,34 @@ export function evaluateCompletion({ file = DEFAULT_LEDGER, args = {} } = {}) {
   if (tasks.length === 0) {
     return { ok: false, reason: '还没有任何验收计划。请先用 acceptance_plan 登记本次任务与它的验收条件（每条要带可执行的验证命令），跑出证据后再 complete。' };
   }
-  // update_goal 入参里没有任务名 → 取最近登记的那个任务（见函数头"已知限制"）
-  const current = tasks
-    .slice()
-    .sort((x, y) => String(y.plannedAt ?? '').localeCompare(String(x.plannedAt ?? '')))[0];
+  // ── 挑任务（2026-11-07 改，P0-3）────────────────────────────────
+  //
+  // update_goal 的入参里有 goal_id（工具 schema 的必填项）。优先按它匹配
+  // 用 planAcceptance({ goalId }) 绑过目标的任务：
+  //   · 有任务绑了 goalId → 必须精确匹配；匹配不到就拒绝（不能拿别人的账本放行）
+  //   · 一条都没绑（旧账本 / 调用方没填 goalId）→ 退回"最近登记的那个任务"（向后兼容）
+  // 之前只认最近登记：同时推进 A、B 两个目标时，A 做完会被 B 的证据拦（或反向误放）。
+  const wantedGoal = String(args?.goal_id ?? '').trim();
+  const bound = tasks.filter((t) => String(t.goalId ?? '').trim() !== '');
+  let current;
+  if (wantedGoal !== '') {
+    const hit = bound.find((t) => String(t.goalId).trim() === wantedGoal);
+    if (hit !== undefined) {
+      current = hit;
+    } else if (bound.length > 0) {
+      return {
+        ok: false,
+        reason: `没有与 goal_id=${wantedGoal} 绑定的验收任务（已绑定 ${bound.length} 个：`
+          + `${bound.map((t) => `${t.task}→${t.goalId}`).slice(0, 5).join('、')}）。`
+          + '请用 plan_acceptance 的 goalId 绑定这个目标后再 complete —— 否则无法确认是哪一份验收账本。',
+      };
+    }
+  }
+  if (current === undefined) {
+    current = tasks
+      .slice()
+      .sort((x, y) => String(y.plannedAt ?? '').localeCompare(String(x.plannedAt ?? '')))[0];
+  }
   const name = current?.task ?? '(未命名任务)';
 
   let v;

@@ -419,6 +419,27 @@ export function buildExperienceText(filePath, budget = INDEX_BUDGET) {
 }
 
 /**
+ * 注入索引的**形态统计**（给设置页与 `/dev-tools/experience` 用）。
+ *
+ * 为什么需要：用户看到"89 条"会以为每条都带描述。实际上预算 4800 只装得下
+ * "全部标题 + 最近 N 条的描述"，其余条目标题在、症状/解法不在。
+ * 这不是 bug（是既定装配策略），但**不说明就是误导**（P1-1）。
+ *
+ * @param {string} [filePath]
+ * @returns {{chars:number, budget:number, entries:number, described:number}}
+ */
+export function indexStats(filePath) {
+  const text = buildExperienceText(filePath);
+  const lines = text.split('\n');
+  return {
+    chars: text.length,
+    budget: INDEX_BUDGET,
+    entries: lines.filter((l) => /^- \*\*E\d+ /.test(l)).length,
+    described: lines.filter((l) => /^\s{2}- 症状：/.test(l)).length,
+  };
+}
+
+/**
  * 在经验库里**按关键词检索**（2026-10-12 加）。
  *
  * 为什么需要：库已经 60 条，而**注入提示词的索引只放标题**（正文要读全文）。

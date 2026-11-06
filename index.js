@@ -270,6 +270,8 @@ export function apply(ctx, config) {
       // 写入口**只有** run_verification 真跑命令 —— 这条通道读的那份数据里，
       // 没有"模型自称已通过"这种字段（见 acceptance.js 的文件头）。
       acceptanceStatus: (o) => evaluateAcceptance({ ...o, file: ACCEPTANCE_LEDGER }),
+      // 经验库文件（P2-2）：/experience/search 用同一份路径，避免"设置页搜的和注入的不是同一份"
+      experienceFile: config.experienceFile,
       diagnose: () => ({
         devMode: isDevModeOn(),
         devModeStamp: getDevModeStamp(),
